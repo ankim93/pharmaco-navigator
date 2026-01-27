@@ -1,0 +1,65 @@
+# Python / Backend
+# Environment variables
+.env
+
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Linter cache
+.ruff_cache/
+
+# Test cache and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Node / Frontend
+# Dependencies
+node_modules/
+yarn.lock
+pnpm-lock.yaml
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# Environment variable variants
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Testing artifacts
+frontend/coverage/
+frontend/playwright-report/
+frontend/playwright-screenshots/
+frontend/test-results/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Misc
+*.log
+docker-compose.override.yml
