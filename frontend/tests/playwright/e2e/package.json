@@ -1,0 +1,23 @@
+{
+  "name": "pharmaco-navigator",
+  "version": "1.0.0",
+  "description": "An Automated Clinical Decision Support System for Genomic-Informed Medication Safety.",
+  "main": "playwright.config.js",
+  "directories": {
+    "doc": "doc",
+    "test": "tests"
+  },
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:simulated": "playwright test --project=simulated-launch",
+    "test:e2e:cerner": "playwright test --project=cerner-ehr-launch",
+    "test:e2e:report": "playwright show-report"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}
