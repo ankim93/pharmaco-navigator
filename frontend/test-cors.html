@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CORS Test - Pharmaco Navigator</title>
+</head>
+<body>
+    <h1>Backend Connection Test</h1>
+    <button onclick="testConnection()">Test Backend Connection</button>
+    <pre id="result"></pre>
+
+    <script>
+        async function testConnection() {
+            const resultEl = document.getElementById('result');
+            resultEl.textContent = 'Testing connection...\n';
+            
+            try {
+                // Test 1: Health endpoint
+                resultEl.textContent += '\n1. Testing health endpoint...\n';
+                const healthResponse = await fetch('http://localhost:8000/api/health');
+                const healthData = await healthResponse.json();
+                resultEl.textContent += `Health check: ${JSON.stringify(healthData, null, 2)}\n`;
+                
+                // Test 2: Patient alerts endpoint
+                resultEl.textContent += '\n2. Testing patient alerts endpoint...\n';
+                const alertsResponse = await fetch('http://localhost:8000/api/v1/patient/12724067/alerts', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include'
+                });
+                
+                if (!alertsResponse.ok) {
+                    throw new Error(`HTTP ${alertsResponse.status}: ${alertsResponse.statusText}`);
+                }
+                
+                const alertsData = await alertsResponse.json();
+                resultEl.textContent += `Alerts fetched: ${JSON.stringify(alertsData, null, 2)}\n`;
+                
+            } catch (error) {
+                resultEl.textContent += `\nERROR: ${error.message}\n`;
+                resultEl.textContent += `Error type: ${error.name}\n`;
+                console.error('Full error:', error);
+            }
+        }
+    </script>
+</body>
+</html>
