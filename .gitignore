@@ -41,9 +41,9 @@ frontend/build/
 
 # Testing artifacts
 frontend/coverage/
-frontend/playwright-report/
 frontend/playwright-screenshots/
-frontend/test-results/
+**/playwright-report/
+**/test-results/
 
 # Logs
 npm-debug.log*

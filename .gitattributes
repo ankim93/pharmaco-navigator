@@ -1,0 +1,6 @@
+**/playwright-report/**  linguist-generated=true
+**/test-results/**       linguist-generated=true
+frontend/coverage/**     linguist-generated=true
+frontend/index.html      linguist-documentation=true
+frontend/test-cors.html  linguist-documentation=true
+**/*.sql                 linguist-language=SQL
