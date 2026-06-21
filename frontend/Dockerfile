@@ -18,15 +18,12 @@ RUN npm run build
 # Stage 2 - Production Server: Minimal Nginx Alpine image that serves only the compiled static assets.
 FROM nginx:alpine AS runner
 
-# Reconfigure Nginx to listen on port 3000 instead of the default 80.
-# sed targets the exact listen directive in the default server block.
-RUN sed -i 's/listen\s*80;/listen 3000;/g; s/listen\s*\[::\]:80;/listen [::]:3000;/g' \
-        /etc/nginx/conf.d/default.conf
+# Nginx listens on port 80 inside the container; map host port as needed via docker-compose.
 
 # Copy the compiled distribution assets from the compiler stage.
 COPY --from=compiler /build/dist /usr/share/nginx/html
 
-EXPOSE 3000
+EXPOSE 80
 
 # Run Nginx in the foreground so the container stays alive.
 CMD ["nginx", "-g", "daemon off;"]
