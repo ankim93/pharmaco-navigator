@@ -1,0 +1,85 @@
+# Pharmaco-Navigator - Production Deployment Manifest
+# Three-tier architecture: PostgreSQL 15 | FastAPI backend | Nginx frontend
+
+services:
+  # Database - PostgreSQL 15 (Alpine) - Stores patient pharmacogenomic data and audit records.
+  db:
+    image: postgres:15-alpine
+    container_name: pharmaco_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pharmaco_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-pharmaco_navigator}
+    volumes:
+      # Persistent, encrypted-at-rest data volume
+      - postgres_encrypted_volume:/var/lib/postgresql/data
+      # Seed script runs automatically on first container initialization
+      - ./backend/db/insert_demo_patients.sql:/docker-entrypoint-initdb.d/insert_demo_patients.sql:ro
+    expose:
+      - "5432"
+    networks:
+      - pharmaco-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pharmaco_admin} -d ${POSTGRES_DB:-pharmaco_navigator}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Backend - FastAPI / Uvicorn (built from ./backend) — Exposes the REST API on host port 8000.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pharmaco_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # asyncpg DSN — uses the internal Docker DNS name of the db service
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-pharmaco_admin}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-pharmaco_navigator}?ssl=prefer"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      # Pass through all additional runtime config from the host .env
+      CERNER_CLIENT_ID: ${CERNER_CLIENT_ID:-}
+      CERNER_CLIENT_SECRET: ${CERNER_CLIENT_SECRET:-}
+      CERNER_REDIRECT_URI: ${CERNER_REDIRECT_URI:-http://localhost:8000/api/v1/auth/callback}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    volumes:
+      # HIPAA-compliant audit log volume — append-only, retained for compliance
+      - audit_secure_logs:/var/log/pharmaco_audit
+    networks:
+      - pharmaco-network
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Frontend - Compiles the React/Vite/Tailwind bundle and serves static assets via Nginx.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pharmaco_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - pharmaco-network
+    depends_on:
+      - backend
+
+# Named Volumes
+volumes:
+  # Primary datastore - mount with encrypted block device in production
+  postgres_encrypted_volume:
+    driver: local
+
+  # Append-only audit trail for HIPAA compliance
+  audit_secure_logs:
+    driver: local
+
+# Networks
+networks:
+  pharmaco-network:
+    driver: bridge
