@@ -1,5 +1,18 @@
 -- DEMO PATIENTS with Comprehensive Medication Profiles - for Full Alert Spectrum Testing
 
+CREATE TABLE IF NOT EXISTS genotypes (
+    id          SERIAL       PRIMARY KEY,
+    patient_id  VARCHAR(255) NOT NULL,
+    gene_symbol VARCHAR(50)  NOT NULL,
+    allele_1    VARCHAR(50)  NOT NULL,
+    allele_2    VARCHAR(50)  NOT NULL,
+    created_at  TIMESTAMP    DEFAULT NOW(),
+    CONSTRAINT uq_genotypes_patient_gene UNIQUE (patient_id, gene_symbol)
+);
+
+CREATE INDEX IF NOT EXISTS ix_genotypes_patient_id  ON genotypes (patient_id);
+CREATE INDEX IF NOT EXISTS ix_genotypes_gene_symbol ON genotypes (gene_symbol);
+
 
 -- DEMO PATIENT 1: "High-Risk Polypharmacy Patient" (ID: DEMO001)
 -- Profile: Elderly patient on 8 medications with multiple drug-gene interactions
