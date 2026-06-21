@@ -1,0 +1,86 @@
+# Pharmaco-Navigator - Monthly Clinical Knowledge Base Sync
+#
+# Pulls updated Level A/B pharmacogenomic guidelines from the public CPIC and
+# NLM RxNav APIs, regenerates backend/app/core/fallback_guidelines.py, and
+# commits the result back to the repository so that offline-fallback data
+# stays version-controlled and automatically up to date.
+#
+# Triggers:
+# Scheduled - first day of every month at 00:00 UTC
+# Manual - workflow_dispatch for on-demand testing / backfill
+
+
+name: Monthly Knowledge Base Sync
+
+on:
+  schedule:
+    # Run at 00:00 UTC on the 1st of every month
+    - cron: "0 0 1 * *"
+
+  # Allow manual dispatch for testing or emergency backfill
+  workflow_dispatch:
+
+# Cancel any in-progress sync for the same ref to avoid data races
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permissions
+permissions:
+  contents: write
+
+# Job: sync-knowledge-base
+jobs:
+  sync-knowledge-base:
+    name: Sync Clinical Knowledge Base
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1. Checkout - full history with write token so the push step works
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The default GITHUB_TOKEN is sufficient
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      # Step 2. Set up Python runtime with pip dependency caching
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Step 3. Install baseline script dependencies
+      - name: Install dependencies
+        run: pip install httpx black
+
+      # Step 4. Execute the knowledge-base synchronisation script
+      - name: Run knowledge base sync
+        run: python backend/db/sync_knowledge_base.py
+
+      # Step 5. Auto-format the generated file for clean, deterministic diffs
+      - name: Format generated guidelines file
+        run: black backend/app/core/fallback_guidelines.py
+
+      # Step 6. Detect whether the guidelines file actually changed.
+      - name: Check for file changes
+        id: diff
+        run: |
+          if git diff --quiet backend/app/core/fallback_guidelines.py; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected in fallback_guidelines.py — skipping commit."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected in fallback_guidelines.py — will commit."
+          fi
+
+      # Step 7. Commit and push the updated guidelines back to the branch.
+      - name: Commit updated guidelines to repository
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/app/core/fallback_guidelines.py
+          git commit -m "chore(data-sync): update fallback_guidelines from CPIC/RxNav [skip ci]"
+          git push
