@@ -1,0 +1,209 @@
+# Pharmaco-Navigator - Continuous Integration Pipeline
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel any in-progress run for the same ref to avoid redundant usage.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Environment defaults shared across jobs
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  # Minimal runtime secrets - overridden by real repository secrets in prod
+  POSTGRES_USER: pharmaco_ci
+  POSTGRES_PASSWORD: pharmaco_ci_password
+  POSTGRES_DB: pharmaco_navigator_ci
+  DATABASE_URL: postgresql+asyncpg://pharmaco_ci:pharmaco_ci_password@localhost:5432/pharmaco_navigator_ci
+  SECRET_KEY: ci_secret_key_for_testing_only_not_for_production_use
+  FRONTEND_BASE_URL: http://localhost:3000
+  CERNER_CLIENT_ID: ci_client_id
+  CERNER_CLIENT_SECRET: ci_client_secret
+  CERNER_REDIRECT_URI: http://localhost:8000/api/v1/auth/callback
+
+# JOB 1 - Backend CI
+# Runs the full Python test suite against a live PostgreSQL container.
+jobs:
+  backend-ci:
+    name: Backend - Pytest + Coverage Gate
+    runs-on: ubuntu-latest
+
+    # PostgreSQL service container - accessible at localhost:5432 inside the job
+    services:
+      database-container:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pharmaco_ci -d pharmaco_navigator_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      # Step 1 - Checkout
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Step 2 - Python runtime with pip cache
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      # Step 3 - Spin up the application containers in detached / headless mode using Docker Compose.
+      - name: Build and start application containers (headless)
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker compose build --no-cache
+          docker compose up --detach --no-deps frontend backend
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          SECRET_KEY: ${{ env.SECRET_KEY }}
+          FRONTEND_BASE_URL: ${{ env.FRONTEND_BASE_URL }}
+          CERNER_CLIENT_ID: ${{ env.CERNER_CLIENT_ID }}
+          CERNER_CLIENT_SECRET: ${{ env.CERNER_CLIENT_SECRET }}
+          CERNER_REDIRECT_URI: ${{ env.CERNER_REDIRECT_URI }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      # Step 4 - Seed the database with gold-standard patient test corpus
+      - name: Seed database with test patient corpus
+        run: python db/run_sql.py db/insert_demo_patients.sql
+        env:
+          DATABASE_URL: postgresql://pharmaco_ci:pharmaco_ci_password@localhost:5432/pharmaco_navigator_ci
+
+      # Step 5 - Execute full Pytest array
+      - name: Run Pytest suite
+        run: |
+          pytest tests/unit tests/api tests/integration \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --junitxml=test-results.xml \
+            -v
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          SECRET_KEY: ${{ env.SECRET_KEY }}
+          CERNER_CLIENT_ID: ${{ env.CERNER_CLIENT_ID }}
+          CERNER_CLIENT_SECRET: ${{ env.CERNER_CLIENT_SECRET }}
+          CERNER_REDIRECT_URI: ${{ env.CERNER_REDIRECT_URI }}
+
+      # Step 6 - Coverage quality gate  (>= 85 %)
+      - name: Enforce 85 % coverage quality gate
+        run: |
+          python - <<'EOF'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("coverage.xml")
+          root = tree.getroot()
+          line_rate = float(root.attrib.get("line-rate", 0))
+          coverage_pct = line_rate * 100
+
+          print(f"Total backend coverage: {coverage_pct:.2f}%")
+
+          threshold = 85.0
+          if coverage_pct < threshold:
+              print(
+                  f"COVERAGE GATE FAILED: {coverage_pct:.2f}% is below the "
+                  f"required threshold of {threshold}%."
+              )
+              sys.exit(1)
+
+          print(f"Coverage gate PASSED ({coverage_pct:.2f}% >= {threshold}%).")
+          EOF
+
+      # Step 7 - Archive backend build artefacts
+      - name: Archive backend test artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-artefacts
+          retention-days: 30
+          path: |
+            backend/test-results.xml
+            backend/coverage.xml
+            backend/htmlcov/
+
+# JOB 2 - Frontend CI
+# Runs Vitest unit tests and Playwright E2E browser assertions.
+  frontend-ci:
+    name: Frontend - Vitest + Playwright E2E
+    runs-on: ubuntu-latest
+    needs: backend-ci
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      # Step 1 - Checkout
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Step 2 - Node.js runtime with npm cache
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Node dependencies (clean install)
+        run: npm ci
+
+      # Step 3 - Build the production frontend bundle
+      - name: Build production assets
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: http://localhost:8000
+
+      # Step 5 - Vitest unit test suite
+      - name: Run Vitest unit tests
+        run: npm test -- --reporter=verbose
+
+      # Step 7 - Install Playwright browsers, then run E2E assertions
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests (headless Chromium)
+        run: npx playwright test --project=chromium
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          CI: "true"
+
+      # Step 8 - Archive frontend build artefacts and Playwright reports
+      - name: Archive frontend test artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-artefacts
+          retention-days: 30
+          path: |
+            frontend/playwright-report/
+            frontend/playwright-screenshots/
+            frontend/test-results/
+            frontend/dist/
