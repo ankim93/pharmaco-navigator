@@ -3,17 +3,28 @@ FastAPI application entry point for Pharmaco Navigator.
 Implements SMART on FHIR authentication with BFF pattern and secure session management.
 """
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
+import logging
+import sys
+
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import SQLModel
+from starlette.middleware.sessions import SessionMiddleware
+
 from app.core.config import settings
+from app.db.session import engine
 from app.api.v1 import auth, fhir, alerts, patient
 from app.models.schemas import HealthCheckResponse
+# Import all SQLModel table classes
+from app.models.genotype import Genotype
 from app.services.genomic_service import GenomicConnectionError, GenomicDataNotFoundError
 from app.services.cpic_service import CPICConnectionError, CPICAPIError
-from fastapi import Request
-from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("pharmaco.navigator")
 
 
 @asynccontextmanager
@@ -21,13 +32,58 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan context manager to handle startup and shutdown events.
     """
+
     # Startup
-    print(f"Starting {settings.PROJECT_NAME}")
-    print(f"Environment: {settings.ENVIRONMENT}")
-    print(f"FHIR Base URL: {settings.CERNER_FHIR_BASE_URL}")
+    # Audit file handler - writes to the HIPAA-compliant volume mount.
+    # Falls back to stderr with an explicit warning if the path is unavailable
+    _audit_log_path = "/var/log/pharmaco_audit/audit.log"
+    _audit_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    try:
+        _file_handler = logging.FileHandler(_audit_log_path, encoding="utf-8")
+        _file_handler.setLevel(logging.INFO)
+        _file_handler.setFormatter(_audit_formatter)
+        logger.addHandler(_file_handler)
+        logger.info("Audit file handler attached — writing to %s", _audit_log_path)
+    except OSError as _ose:
+        _stream_handler = logging.StreamHandler(sys.stderr)
+        _stream_handler.setLevel(logging.INFO)
+        _stream_handler.setFormatter(_audit_formatter)
+        logger.addHandler(_stream_handler)
+        logger.warning(
+            "Audit volume unavailable (%s). "
+            "Falling back to stderr stream logging.",
+            _ose,
+        )
+
+    logger.info("Starting %s (environment: %s)", settings.PROJECT_NAME, settings.ENVIRONMENT)
+    logger.info("FHIR base URL: %s", settings.CERNER_FHIR_BASE_URL)
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        logger.info("Database schema initialised — all tables verified / created.")
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database schema initialisation failed (SQLAlchemy): %s",
+            exc,
+            exc_info=True,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "Unexpected error during database schema initialisation: %s",
+            exc,
+            exc_info=True,
+        )
+        raise
+
     yield
+
     # Shutdown
-    print(f"Shutting down {settings.PROJECT_NAME}")
+    logger.info("Shutting down %s — disposing connection pool.", settings.PROJECT_NAME)
+    await engine.dispose()
 
 
 # Initialize FastAPI application
