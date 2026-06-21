@@ -4,8 +4,8 @@ Provides type-safe schemas for Cerner OAuth, FHIR, RxNav, and CPIC APIs.
 """
 
 from __future__ import annotations
-from typing import Optional, List, Literal, Any
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Literal, Any, FrozenSet
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # Cerner OAuth 2.0 / SMART on FHIR Models
@@ -219,6 +219,57 @@ class PhenotypeResult(BaseModel):
     # Flag for missing data
     dataMissing: bool = False
     missingReason: Optional[str] = None
+
+
+# Genotype Input Validation Model
+# Enforces Zero-Error data integrity at the system boundary
+_SUPPORTED_GENES: FrozenSet[str] = frozenset({"CYP2D6", "CYP2C19", "SLCO1B1", "ABCB1"})
+
+
+class GenotypeInputModel(BaseModel):
+    """
+    Strict input schema for a single star-allele genotype record.
+    """
+    patient_id: str
+    gene_symbol: str
+    allele_1: str
+    allele_2: str
+
+    @field_validator("gene_symbol", mode="before")
+    @classmethod
+    def validate_gene_symbol(cls, value: str) -> str:
+        """
+        Normalise and validate the gene symbol against the supported panel.
+        """
+        if not isinstance(value, str):
+            raise ValueError("gene_symbol must be a string.")
+
+        normalised = value.strip().upper()
+
+        if normalised not in _SUPPORTED_GENES:
+            supported = ", ".join(sorted(_SUPPORTED_GENES))
+            raise ValueError(
+                f"'{normalised}' is not a recognised gene symbol. "
+                f"Supported panel genes are: {supported}."
+            )
+
+        return normalised
+
+    @field_validator("allele_1", "allele_2", mode="before")
+    @classmethod
+    def validate_allele(cls, value: str) -> str:
+        """
+        Normalise allele designations for clean database indexing.
+        """
+        if not isinstance(value, str):
+            raise ValueError("Allele values must be strings.")
+
+        normalised = value.strip().upper()
+
+        if not normalised:
+            raise ValueError("Allele value must not be empty or whitespace-only.")
+
+        return normalised
 
 
 # Clinical Alert Models (Orchestration Output)
