@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.genotype import Genotype
-from app.db.session import AsyncSessionLocal
+from app.db.session import async_session_factory as AsyncSessionLocal
 
 
 # Configure logging
