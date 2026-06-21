@@ -1,68 +1,89 @@
 """
-Database session management for Pharmaco-Navigator.
-
-Provides a single async SQLAlchemy engine and a stateless session-injection
-factory designed for FastAPI's dependency injection system.
+Database session management for Azure PostgreSQL.
+Provides async SQLAlchemy engine and session factory for genomic data retrieval from the Azure-hosted genotypes table.
 """
 
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine, async_sessionmaker
 from typing import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.core.config import settings
 
-# URL normalisation
-# Accepts both postgresql:// and postgresql+asyncpg:// connection strings and
-# translates the psycopg-style `sslmode` query parameter to the asyncpg-style
-# `ssl` parameter.
-def _normalise_database_url(raw_url: str) -> str:
-    if raw_url.startswith("postgresql://"):
-        raw_url = raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    elif not raw_url.startswith("postgresql+asyncpg://"):
-        scheme = raw_url.split("://")[0] if "://" in raw_url else "invalid"
+
+# Create async engine for Azure PostgreSQL
+def get_async_engine() -> AsyncEngine:
+    """
+    Create async SQLAlchemy engine for Azure PostgreSQL.
+    """
+    database_url = settings.DATABASE_URL
+    
+    # Ensure async driver is used
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif not database_url.startswith("postgresql+asyncpg://"):
         raise ValueError(
-            "DATABASE_URL must use the postgresql:// or postgresql+asyncpg:// "
-            f"scheme. Got: {scheme}"
+            "DATABASE_URL must use postgresql:// or postgresql+asyncpg:// scheme. "
+            f"Got: {database_url.split('://')[0] if '://' in database_url else 'invalid'}"
         )
-
-    parsed = urlparse(raw_url)
+    
+    # Replace sslmode=require with ssl=require for asyncpg compatibility
+    parsed = urlparse(database_url)
     query_params = parse_qs(parsed.query)
-
-    # Translate psycopg2-style sslmode → asyncpg-style ssl
-    if "sslmode" in query_params:
-        query_params["ssl"] = query_params.pop("sslmode")
-
-    return urlunparse((
+    
+    if 'sslmode' in query_params:
+        ssl_value = query_params['sslmode'][0]
+        # Remove sslmode and add ssl parameter
+        del query_params['sslmode']
+        query_params['ssl'] = [ssl_value]
+    
+    # Rebuild query string
+    new_query = urlencode(query_params, doseq=True)
+    
+    # Rebuild URL with fixed query string
+    database_url = urlunparse((
         parsed.scheme,
         parsed.netloc,
         parsed.path,
         parsed.params,
-        urlencode(query_params, doseq=True),
-        parsed.fragment,
+        new_query,
+        parsed.fragment
     ))
+    
+    # Create engine with connection pooling
+    engine = create_async_engine(
+        database_url,
+        echo=False,  # Set to True for SQL query debugging
+        pool_size=settings.DATABASE_POOL_SIZE,
+        max_overflow=settings.DATABASE_MAX_OVERFLOW,
+        pool_pre_ping=True,  # Verify connections before using
+        pool_recycle=3600,  # Recycle connections after 1 hour
+    )
+    
+    return engine
 
-# Engine - single instance, shared connection pool
-# Created once at module load; never recreated per request.
-engine = create_async_engine(
-    _normalise_database_url(settings.DATABASE_URL),
-    echo=False,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    pool_pre_ping=True,   # Discard stale connections before handing them out
-    pool_recycle=3600,    # Recycle connections after 1 hour
-)
 
-# Session factory - bound to the single engine above
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
+# Create async session factory
+async_session_factory = async_sessionmaker(
+    bind=get_async_engine(),
     class_=AsyncSession,
-    expire_on_commit=False,
+    expire_on_commit=False,  # Keep objects usable after commit
     autocommit=False,
     autoflush=False,
 )
 
-# Dependency - stateless per-request session injection
+
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
-        yield session
+    """
+    Dependency for FastAPI routes to get async database sessions.
+    """
+    async with async_session_factory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+# Global engine instance for service classes
+engine = get_async_engine()
