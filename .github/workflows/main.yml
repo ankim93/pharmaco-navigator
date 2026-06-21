@@ -90,10 +90,9 @@ jobs:
 
       # Step 4 - Seed the database with gold-standard patient test corpus
       - name: Seed database with test patient corpus
-        run: python db/run_sql.py db/insert_demo_patients.sql
+        run: python db/run_sql.py insert_demo_patients.sql
         env:
           DATABASE_URL: postgresql://pharmaco_ci:pharmaco_ci_password@localhost:5432/pharmaco_navigator_ci
-
       # Step 5 - Execute full Pytest array
       - name: Run Pytest suite
         run: |
