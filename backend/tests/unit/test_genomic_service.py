@@ -48,7 +48,7 @@ class TestGenomicService:
             _MockGenotypeRecord("P1", "ABCB1",   "C",   "T"),
         ]
         _, mock_factory = _make_async_db_session(records)
-        with patch("app.services.genomic_service.async_session_factory", mock_factory):
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             result = await svc.get_patient_genotypes("P1")
 
         assert result["CYP2D6"]  == ("*1", "*4")
@@ -66,7 +66,7 @@ class TestGenomicService:
             _MockGenotypeRecord("P2", "CYP2D6", "*1", "*1"),
         ]
         _, mock_factory = _make_async_db_session(records)
-        with patch("app.services.genomic_service.async_session_factory", mock_factory):
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             result = await svc.get_patient_genotypes("P2")
 
         assert result["CYP2D6"]  == ("*1", "*1")
@@ -89,7 +89,7 @@ class TestGenomicService:
         from app.services.genomic_service import GenomicDataNotFoundError
         svc = self._service()
         _, mock_factory = _make_async_db_session([])  # no records at all
-        with patch("app.services.genomic_service.async_session_factory", mock_factory):
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             with pytest.raises(GenomicDataNotFoundError):
                 await svc.get_patient_genotypes("NO_DATA_PATIENT")
 
@@ -106,7 +106,7 @@ class TestGenomicService:
         mock_session_cm.__aexit__ = AsyncMock(return_value=None)
         mock_factory = MagicMock(return_value=mock_session_cm)
 
-        with patch("app.services.genomic_service.async_session_factory", mock_factory):
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             with pytest.raises(GenomicConnectionError):
                 await svc.get_patient_genotypes("P3")
 
@@ -121,7 +121,7 @@ class TestGenomicService:
             _MockGenotypeRecord("P4", "CYP2C19", "*1", "*2"),
         ]
         _, mock_factory = _make_async_db_session(records)
-        with patch("app.services.genomic_service.async_session_factory", mock_factory):
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             result = await svc.get_patient_genotypes("P4", required_genes=["CYP2D6"])
 
         assert "CYP2D6"  in result

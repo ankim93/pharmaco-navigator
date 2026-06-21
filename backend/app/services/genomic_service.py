@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.genotype import Genotype
-from app.db.session import async_session_factory
+from app.db.session import AsyncSessionLocal
 
 
 # Configure logging
@@ -88,7 +88,7 @@ class GenomicService:
         
         try:
             # Execute async database query
-            async with async_session_factory() as session:
+            async with AsyncSessionLocal() as session:
                 # Query all genotypes for the patient
                 stmt = select(Genotype).where(Genotype.patient_id == patient_id) # type: ignore[arg-type]
                 result = await session.execute(stmt)
@@ -192,7 +192,7 @@ class GenomicService:
         )
         
         try:
-            async with async_session_factory() as session:
+            async with AsyncSessionLocal() as session:
                 # Query specific gene for patient
                 stmt = select(Genotype).where(
                     Genotype.patient_id == patient_id,  # type: ignore[arg-type]
@@ -240,7 +240,7 @@ class GenomicService:
         logger.info(f"Checking for genomic data for patient_id='{patient_id}'")
         
         try:
-            async with async_session_factory() as session:
+            async with AsyncSessionLocal() as session:
                 stmt = select(Genotype).where(Genotype.patient_id == patient_id).limit(1)   # type: ignore[arg-type]
                 result = await session.execute(stmt)
                 record = result.scalar_one_or_none()
