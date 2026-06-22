@@ -2,8 +2,11 @@
 Unit tests for app/services/genomic_service.py — DB calls mocked via AsyncMock.
 """
 
+from unittest import result
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from app.services.genomic_service import GenomicService, GenomicValidationError, GenomicDataNotFoundError, GenomicConnectionError
 
 
 # Shared helpers
@@ -15,9 +18,10 @@ class _MockGenotypeRecord:
         self.allele_2 = allele_2
 
 
-def _make_async_db_session(records):
+def _make_async_db_session(records, single_record=None):
     mock_result = MagicMock()
     mock_result.scalars.return_value.all.return_value = records
+    mock_result.scalar_one_or_none.return_value = single_record
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session_cm = MagicMock()
@@ -32,7 +36,6 @@ def _make_async_db_session(records):
 class TestGenomicService:
 
     def _service(self):
-        from app.services.genomic_service import GenomicService
         return GenomicService()
 
     @pytest.mark.asyncio
@@ -88,7 +91,7 @@ class TestGenomicService:
         """
         from app.services.genomic_service import GenomicDataNotFoundError
         svc = self._service()
-        _, mock_factory = _make_async_db_session([])  # no records at all
+        _, mock_factory = _make_async_db_session([], single_record=None)  # no records at all
         with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
             with pytest.raises(GenomicDataNotFoundError):
                 await svc.get_patient_genotypes("NO_DATA_PATIENT")
@@ -126,3 +129,60 @@ class TestGenomicService:
 
         assert "CYP2D6"  in result
         assert "CYP2C19" not in result
+
+    @pytest.mark.asyncio
+    async def test_get_gene_for_patient_success(self):
+        """
+        Verify clean star-allele tuple retrieval for an explicit patient biomarker.
+        """
+        svc = self._service()
+        record = _MockGenotypeRecord("P5", "CYP2D6", "*1", "*4")
+        _, mock_factory = _make_async_db_session(records=[], single_record=record)
+        
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
+            result = await svc.get_gene_for_patient("P5", "CYP2D6")
+            
+        assert result == ("*1", "*4")
+
+
+    @pytest.mark.asyncio
+    async def test_get_gene_for_patient_missing(self):
+        """
+        Verify get_gene_for_patient returns None if the record does not exist.
+        """
+        svc = self._service()
+        _, mock_factory = _make_async_db_session(records=[], single_record=None)
+        
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
+            result = await svc.get_gene_for_patient("P6", "CYP2D6")
+            
+        assert result is None
+
+
+    @pytest.mark.asyncio
+    async def test_check_patient_has_data_true(self):
+        """
+        Verify check_patient_has_data returns True when rows exist.
+        """
+        svc = self._service()
+        record = _MockGenotypeRecord("P7", "CYC2C19", "*1", "*1")
+        _, mock_factory = _make_async_db_session(records=[], single_record=record)
+        
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
+            has_data = await svc.check_patient_has_data("P7")
+            
+        assert has_data is True
+
+
+    @pytest.mark.asyncio
+    async def test_check_patient_has_data_false(self):
+        """
+        Verify check_patient_has_data returns False when no rows exist.
+        """
+        svc = self._service()
+        _, mock_factory = _make_async_db_session(records=[], single_record=None)
+        
+        with patch("app.services.genomic_service.AsyncSessionLocal", mock_factory):
+            has_data = await svc.check_patient_has_data("P8")
+            
+        assert has_data is False
