@@ -50,8 +50,8 @@ app.add_middleware(
     allow_origins=settings.get_allowed_origins_list(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    expose_headers=[],
 )
 
 # SessionMiddleware for secure session management
