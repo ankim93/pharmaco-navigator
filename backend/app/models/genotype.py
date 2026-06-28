@@ -1,83 +1,44 @@
 """
-SQLModel schema for the genotypes table in Azure PostgreSQL.
-Maps to the genotypes table containing patient star-allele data for pharmacogenomic screening.
+ORM model for the ``genotypes`` table.
+
+Each row represents one diplotype observation for a single gene/patient pair.
+The composite (patient_id, gene_symbol) pair is unique — concurrent upserts
+should use ON CONFLICT (patient_id, gene_symbol) DO UPDATE rather than a
+blind INSERT to avoid violating the constraint.
 """
 
 from typing import Optional
-from sqlmodel import Field, SQLModel, Column
-from sqlalchemy import String
+
+from sqlalchemy import UniqueConstraint
+from sqlmodel import Field, SQLModel
 
 
 class Genotype(SQLModel, table=True):
-    """
-    SQLModel representing the genotypes table in Azure PostgreSQL.
-    """
-    
-    __tablename__: str = "genotypes"  # type: ignore[assignment]
-    
-    id: Optional[int] = Field(
-        default=None,
-        primary_key=True,
-        description="Auto-incrementing primary key"
+    __tablename__ = "genotypes"  # type: ignore[assignment]
+
+    __table_args__ = (
+        # One genotype row per patient per gene — enforced at the database level.
+        UniqueConstraint("patient_id", "gene_symbol", name="uq_genotype_patient_gene"),
     )
-    
-    patient_id: str = Field(
-        ...,
-        max_length=255,
-        index=True,
-        description="Patient identifier from FHIR context (e.g., '12724067')"
-    )
-    
-    gene_symbol: str = Field(
-        ...,
-        max_length=50,
-        index=True,
-        description="Gene symbol (e.g., 'CYP2D6', 'SLCO1B1')"
-    )
-    
-    allele_1: str = Field(
-        ...,
-        max_length=50,
-        description="First allele designation (e.g., '*1', '*2', '*5')"
-    )
-    
-    allele_2: str = Field(
-        ...,
-        max_length=50,
-        description="Second allele designation (e.g., '*1', '*4', '*17')"
-    )
-    
-    class Config:
-        """
-        Pydantic configuration for SQLModel.
-        """
-        # Enable ORM mode for SQLAlchemy compatibility
-        from_attributes = True
-        
-        # JSON schema example for API documentation
-        json_schema_extra = {
-            "example": {
-                "id": 1,
-                "patient_id": "12724067",
-                "gene_symbol": "CYP2D6",
-                "allele_1": "*1",
-                "allele_2": "*4"
-            }
-        }
-    
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Indexed individually to support single-column lookups (patient dashboard,
+    # gene-level analytics sweeps) without requiring a full table scan.
+    patient_id: str = Field(index=True, max_length=255, nullable=False)
+    gene_symbol: str = Field(index=True, max_length=50, nullable=False)
+
+    # Star-allele notation per CPIC convention, e.g. "*1", "*4", "*17".
+    allele_1: str = Field(max_length=50, nullable=False)
+    allele_2: str = Field(max_length=50, nullable=False)
+
+    @property
+    def diplotype_key(self) -> tuple[str, str]:
+        """Canonical (sorted) allele pair used by PhenotypeService lookups."""
+        return tuple(sorted([self.allele_1, self.allele_2]))  # type: ignore[return-value]
+
     def __repr__(self) -> str:
-        """
-        String representation for debugging.
-        """
         return (
             f"Genotype(id={self.id}, patient_id='{self.patient_id}', "
-            f"gene_symbol='{self.gene_symbol}', allele_1='{self.allele_1}', "
-            f"allele_2='{self.allele_2}')"
+            f"gene='{self.gene_symbol}', diplotype='{self.allele_1}/{self.allele_2}')"
         )
-    
-    @property
-    def genotype_pair(self) -> tuple[str, str]:
-        """
-        Return allele pair as tuple for phenotype translation.
-        """
-        return (self.allele_1, self.allele_2)
