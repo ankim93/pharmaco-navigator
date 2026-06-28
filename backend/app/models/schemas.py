@@ -5,7 +5,7 @@ Provides type-safe schemas for Cerner OAuth, FHIR, RxNav, and CPIC APIs.
 
 from __future__ import annotations
 from typing import Optional, List, Literal, Any
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # Cerner OAuth 2.0 / SMART on FHIR Models
@@ -292,7 +292,7 @@ class HealthCheckResponse(BaseModel):
     version: Optional[str] = None
 
 
-# Error Response Models 
+# Error Response Models
 class ErrorDetail(BaseModel):
     """
     Structured error detail.
@@ -310,3 +310,57 @@ class ServiceErrorResponse(BaseModel):
     service: str  # "Cerner", "RxNav", "CPIC", "Database"
     detail: str
     failureMode: Literal["graceful", "critical"]
+
+
+# =========================================================================== #
+# Phase 2 — Perimeter input guardrails                                        #
+# =========================================================================== #
+
+_SCOPE_PANEL: frozenset[str] = frozenset({"CYP2D6", "CYP2C19", "SLCO1B1", "ABCB1"})
+
+
+class GenotypeInputModel(BaseModel):
+    """
+    Perimeter gate for raw genotype write payloads.
+
+    Validators run at the boundary before any service or database layer is
+    touched — invalid data is rejected with a 422 before it can corrupt the
+    genotype table or produce a nonsensical phenotype calculation.
+
+    Rules (applied in declaration order):
+    - patient_id: stripped of leading/trailing whitespace; must be non-empty.
+    - gene_symbol: stripped, forced to uppercase, must be within SCOPE_PANEL.
+    - allele_1 / allele_2: stripped and forced to uppercase; must be non-empty.
+    """
+
+    patient_id: str
+    gene_symbol: str
+    allele_1: str
+    allele_2: str
+
+    @field_validator("patient_id")
+    @classmethod
+    def _clean_patient_id(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("patient_id must not be empty or whitespace-only")
+        return cleaned
+
+    @field_validator("gene_symbol")
+    @classmethod
+    def _validate_gene_symbol(cls, v: str) -> str:
+        normalised = v.strip().upper()
+        if normalised not in _SCOPE_PANEL:
+            raise ValueError(
+                f"gene_symbol '{normalised}' is outside the supported scope panel. "
+                f"Accepted genes: {sorted(_SCOPE_PANEL)}"
+            )
+        return normalised
+
+    @field_validator("allele_1", "allele_2")
+    @classmethod
+    def _normalise_allele(cls, v: str) -> str:
+        cleaned = v.strip().upper()
+        if not cleaned:
+            raise ValueError("Allele designations must not be empty or whitespace-only")
+        return cleaned
