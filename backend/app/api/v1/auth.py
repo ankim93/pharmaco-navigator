@@ -160,7 +160,7 @@ async def auth_callback(
     # Redirect to frontend dashboard with patient ID for SMART launch context
     patient_id = token_data_response.patient
     return RedirectResponse(
-        url=f"http://localhost:3000/dashboard?patient={patient_id}",
+        url=f"{settings.FRONTEND_BASE_URL}/dashboard?patient={patient_id}",
         status_code=status.HTTP_302_FOUND
     )
 
