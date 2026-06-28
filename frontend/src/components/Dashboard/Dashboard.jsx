@@ -67,12 +67,9 @@ export const Dashboard = () => {
     setError(null);
 
     try {
-      console.log(`[Dashboard] Fetching alerts for patient: ${patientId}`);
       const data = await fetchPatientAlerts(patientId);
       setAlertData(data);
-      console.log('[Dashboard] Alerts loaded successfully:', data);
     } catch (err) {
-      console.error('[Dashboard] Error loading alerts:', err);
       setError(err);
     } finally {
       setLoading(false);

@@ -61,14 +61,8 @@ export const fetchPatientAlerts = async (patientId) => {
   if (!patientId) {
     throw new Error('Patient ID is required');
   }
-  
-  try {
-    const response = await apiClient.get(`/patient/${patientId}/alerts`);
-    return response.data;
-  } catch (error) {
-    console.error('API Error - fetchPatientAlerts:', error.message);
-    throw error;
-  }
+  const response = await apiClient.get(`/patient/${patientId}/alerts`);
+  return response.data;
 };
 
 /**
@@ -76,13 +70,8 @@ export const fetchPatientAlerts = async (patientId) => {
  * @returns {Promise<Object>} Health status
  */
 export const checkBackendHealth = async () => {
-  try {
-    const response = await apiClient.get('/health');
-    return response.data;
-  } catch (error) {
-    console.error('API Error - checkBackendHealth:', error.message);
-    throw error;
-  }
+  const response = await apiClient.get('/health');
+  return response.data;
 };
 
 export default {
