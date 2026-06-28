@@ -10,9 +10,12 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
+from sqlmodel import SQLModel
 from app.core.config import settings
 from app.api.v1 import auth, fhir, alerts, patient
 from app.models.schemas import HealthCheckResponse
+from app.models import genotype as _genotype_models  # noqa: F401 — registers table metadata
+from app.db.session import get_async_engine
 from app.services.genomic_service import GenomicConnectionError, GenomicDataNotFoundError
 from app.services.cpic_service import CPICConnectionError, CPICAPIError
 
@@ -22,12 +25,13 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan context manager to handle startup and shutdown events.
     """
-    # Startup
     print(f"Starting {settings.PROJECT_NAME}")
     print(f"Environment: {settings.ENVIRONMENT}")
     print(f"FHIR Base URL: {settings.CERNER_FHIR_BASE_URL}")
+    engine = get_async_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
     yield
-    # Shutdown
     print(f"Shutting down {settings.PROJECT_NAME}")
 
 
