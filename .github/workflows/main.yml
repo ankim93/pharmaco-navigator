@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Backend: pytest with ≥85% coverage gate, seeded PostgreSQL
+  # ─────────────────────────────────────────────────────────────────────────────
+  backend-ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pharmaco_ci
+          POSTGRES_USER: pharmaco_user
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pharmaco_user -d pharmaco_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://pharmaco_user:ci_password@localhost/pharmaco_ci
+      SECRET_KEY: ci-test-secret-key-not-for-production
+      CERNER_CLIENT_ID: ci-client-id
+      CERNER_CLIENT_SECRET: ci-client-secret
+      FRONTEND_BASE_URL: http://localhost:3000
+      ENVIRONMENT: test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest-cov
+
+      - name: Initialize database schema
+        run: |
+          python - <<'EOF'
+          import asyncio, os
+          from sqlmodel import SQLModel
+          from sqlalchemy.ext.asyncio import create_async_engine
+          from app.models.genotype import Genotype  # registers table metadata
+          engine = create_async_engine(os.environ["DATABASE_URL"])
+          async def run():
+              async with engine.begin() as conn:
+                  await conn.run_sync(SQLModel.metadata.create_all)
+          asyncio.run(run())
+          EOF
+
+      - name: Seed demo patients
+        run: |
+          psql postgresql://pharmaco_user:ci_password@localhost/pharmaco_ci \
+               -f db/insert_demo_patients.sql
+
+      - name: Run tests with coverage gate (≥85%)
+        run: |
+          pytest \
+            --cov=app \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=85 \
+            -q
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Frontend: Vitest unit suite with MSW mock handlers
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend-ci:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests (MSW)
+        run: npm test -- --run
