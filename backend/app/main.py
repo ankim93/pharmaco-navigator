@@ -6,8 +6,9 @@ Implements SMART on FHIR authentication with BFF pattern and secure session mana
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.api.v1 import auth, fhir, alerts, patient
@@ -65,13 +66,27 @@ app.add_middleware(
 )
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        return response
+class SecurityHeadersMiddleware:
+    """
+    Pure ASGI middleware to avoid BaseHTTPMiddleware's cookie-dropping issue.
+    """
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.append("X-Content-Type-Options", "nosniff")
+                headers.append("X-Frame-Options", "DENY")
+                headers.append("Referrer-Policy", "strict-origin-when-cross-origin")
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
 
 app.add_middleware(SecurityHeadersMiddleware)
 
