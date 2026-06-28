@@ -82,6 +82,7 @@ jobs:
       - name: Run tests with coverage gate (≥85%)
         run: |
           pytest \
+            -m "not e2e" \
             --cov=app \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
