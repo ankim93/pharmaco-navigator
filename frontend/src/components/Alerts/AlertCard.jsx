@@ -16,6 +16,20 @@ import {
   Tablets
 } from 'lucide-react';
 
+const SAFE_URL_RE = /^https?:\/\//i;
+
+const sanitizeGuidelineUrl = (url) => {
+  if (!url || !SAFE_URL_RE.test(url)) return null;
+  return url;
+};
+
+const TIER_LABELS = {
+  RED:    'High Risk / Contraindication warning',
+  YELLOW: 'Moderate Risk / Dosage change required',
+  GREEN:  'Normal safety profile',
+  GREY:   'Data missing / Action required to order diagnostic panels',
+};
+
 const ALERT_STYLES = {
   RED: {
     bg: 'bg-white',
@@ -61,9 +75,11 @@ const ALERT_STYLES = {
 
 export const AlertCard = ({ alert }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  
+
   const style = ALERT_STYLES[alert.alert_color] || ALERT_STYLES.GREY;
   const Icon = style.icon;
+  const tierLabel = TIER_LABELS[alert.alert_color] || TIER_LABELS.GREY;
+  const safeUrl = sanitizeGuidelineUrl(alert.guideline_url);
 
   return (
     <div 
@@ -78,8 +94,13 @@ export const AlertCard = ({ alert }) => {
             {alert.drug_name}
           </h3>
         </div>
-        <span className={`${style.badgeColor} text-xs font-semibold px-2 py-1 rounded`}>
-          {alert.alert_color}
+        <span
+          className={`${style.badgeColor} text-xs font-semibold px-2 py-1 rounded`}
+          aria-label={tierLabel}
+          title={tierLabel}
+        >
+          <span>{alert.alert_color}</span>
+          <span className="sr-only"> — {tierLabel}</span>
         </span>
       </div>
 
@@ -151,16 +172,20 @@ export const AlertCard = ({ alert }) => {
 
         {isExpanded && (
           <div className="mt-2 pt-2 border-t border-gray-300">
-            <a
-              href={alert.guideline_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`inline-flex items-center space-x-2 ${style.textColor} 
-                         hover:underline text-sm`}
-            >
-              <ExternalLink className="h-4 w-4" />
-              <span>Open Full CPIC Guideline</span>
-            </a>
+            {safeUrl ? (
+              <a
+                href={safeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`inline-flex items-center space-x-2 ${style.textColor}
+                           hover:underline text-sm`}
+              >
+                <ExternalLink className="h-4 w-4" />
+                <span>Open Full CPIC Guideline</span>
+              </a>
+            ) : (
+              <p className="text-sm text-gray-500">No guideline URL available.</p>
+            )}
           </div>
         )}
       </div>
