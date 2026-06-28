@@ -7,16 +7,21 @@ import React from 'react';
 import { AlertCard } from './AlertCard';
 import { AlertTriangle, AlertCircle, CheckCircle, HelpCircle } from 'lucide-react';
 
-const AlertSection = ({ title, alerts, color, Icon, emptyMessage }) => (
+const AlertSection = ({ title, subtitle, alerts, color, Icon, emptyMessage }) => (
   <div className="space-y-3">
-    <div className="flex items-center space-x-2 mb-4">
-      <Icon className={`h-5 w-5 ${color}`} />
-      <h2 className="text-lg font-bold text-gray-800">
-        {title}
-        <span className="ml-2 text-sm font-normal text-gray-600">
-          ({alerts.length})
-        </span>
-      </h2>
+    <div className="mb-4">
+      <div className="flex items-center space-x-2">
+        <Icon className={`h-5 w-5 ${color}`} />
+        <h2 className="text-lg font-bold text-gray-800">
+          {title}
+          <span className="ml-2 text-sm font-normal text-gray-600">
+            ({alerts.length})
+          </span>
+        </h2>
+      </div>
+      {subtitle && (
+        <p className="mt-0.5 ml-7 text-xs text-gray-500 font-medium">{subtitle}</p>
+      )}
     </div>
 
     {alerts.length === 0 ? (
@@ -43,6 +48,7 @@ export const AlertGrid = ({ alerts }) => {
       {/* RED ALERTS Column */}
       <AlertSection
         title="High Risk"
+        subtitle="High Risk / Contraindication warning"
         alerts={red_alerts}
         color="text-rose-600"
         Icon={AlertTriangle}
@@ -52,6 +58,7 @@ export const AlertGrid = ({ alerts }) => {
       {/* YELLOW ALERTS Column */}
       <AlertSection
         title="Moderate Risk"
+        subtitle="Moderate Risk / Dosage change required"
         alerts={yellow_alerts}
         color="text-amber-600"
         Icon={AlertCircle}
@@ -61,6 +68,7 @@ export const AlertGrid = ({ alerts }) => {
       {/* GREEN ALERTS Column */}
       <AlertSection
         title="Safe / Standard Dosing"
+        subtitle="Normal safety profile"
         alerts={green_alerts}
         color="text-emerald-600"
         Icon={CheckCircle}
@@ -71,6 +79,7 @@ export const AlertGrid = ({ alerts }) => {
       {hasGreyAlerts && (
         <AlertSection
           title="Data Missing/Unknown"
+          subtitle="Data missing / Action required to order diagnostic panels"
           alerts={grey_alerts}
           color="text-gray-500"
           Icon={HelpCircle}
