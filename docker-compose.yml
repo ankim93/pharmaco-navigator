@@ -1,0 +1,58 @@
+services:
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pharmaco_navigator
+      POSTGRES_USER: pharmaco_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./backend/db/insert_demo_patients.sql:/docker-entrypoint-initdb.d/02_demo_patients.sql
+    networks:
+      - pharmaco-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pharmaco_user -d pharmaco_navigator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pharmaco_user:${DB_PASSWORD}@db/pharmaco_navigator
+      FRONTEND_BASE_URL: http://localhost:3000
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      CERNER_CLIENT_ID: ${CERNER_CLIENT_ID:-demo}
+      CERNER_CLIENT_SECRET: ${CERNER_CLIENT_SECRET:-demo}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - pharmaco-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - pharmaco-network
+    restart: unless-stopped
+
+networks:
+  pharmaco-network:
+    driver: bridge
+
+volumes:
+  pg_data:

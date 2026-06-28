@@ -8,7 +8,7 @@ blind INSERT to avoid violating the constraint.
 """
 
 from typing import Optional
-
+from datetime import datetime
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
@@ -31,6 +31,9 @@ class Genotype(SQLModel, table=True):
     # Star-allele notation per CPIC convention, e.g. "*1", "*4", "*17".
     allele_1: str = Field(max_length=50, nullable=False)
     allele_2: str = Field(max_length=50, nullable=False)
+
+    # Audit timestamp set by insert_demo_patients.sql and live upsert paths.
+    created_at: Optional[datetime] = Field(default=None)
 
     @property
     def diplotype_key(self) -> tuple[str, str]:
