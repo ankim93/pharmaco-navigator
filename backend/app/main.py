@@ -3,8 +3,10 @@ FastAPI application entry point for Pharmaco Navigator.
 Implements SMART on FHIR authentication with BFF pattern and secure session management.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
@@ -12,8 +14,6 @@ from app.api.v1 import auth, fhir, alerts, patient
 from app.models.schemas import HealthCheckResponse
 from app.services.genomic_service import GenomicConnectionError, GenomicDataNotFoundError
 from app.services.cpic_service import CPICConnectionError, CPICAPIError
-from fastapi import Request
-from fastapi.responses import JSONResponse
 
 
 @asynccontextmanager
@@ -61,8 +61,19 @@ app.add_middleware(
     session_cookie=settings.SESSION_COOKIE_NAME,
     max_age=settings.SESSION_MAX_AGE,
     same_site=settings.session_cookie_samesite,
-    https_only=settings.session_cookie_secure, 
+    https_only=settings.session_cookie_secure,
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Global Exception Handlers
