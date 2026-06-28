@@ -7,34 +7,34 @@ import React from 'react';
 import { AlertCard } from './AlertCard';
 import { AlertTriangle, AlertCircle, CheckCircle, HelpCircle } from 'lucide-react';
 
+const AlertSection = ({ title, alerts, color, Icon, emptyMessage }) => (
+  <div className="space-y-3">
+    <div className="flex items-center space-x-2 mb-4">
+      <Icon className={`h-5 w-5 ${color}`} />
+      <h2 className="text-lg font-bold text-gray-800">
+        {title}
+        <span className="ml-2 text-sm font-normal text-gray-600">
+          ({alerts.length})
+        </span>
+      </h2>
+    </div>
+
+    {alerts.length === 0 ? (
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+        <p className="text-sm text-gray-500">{emptyMessage}</p>
+      </div>
+    ) : (
+      <div className="space-y-3">
+        {alerts.map((alert, index) => (
+          <AlertCard key={`${alert.drug_name}-${alert.gene_symbol}-${index}`} alert={alert} />
+        ))}
+      </div>
+    )}
+  </div>
+);
+
 export const AlertGrid = ({ alerts }) => {
   const { red_alerts = [], yellow_alerts = [], green_alerts = [], grey_alerts = [] } = alerts;
-
-  const AlertSection = ({ title, alerts, color, Icon, emptyMessage }) => (
-    <div className="space-y-3">
-      <div className="flex items-center space-x-2 mb-4">
-        <Icon className={`h-5 w-5 ${color}`} />
-        <h2 className="text-lg font-bold text-gray-800">
-          {title}
-          <span className="ml-2 text-sm font-normal text-gray-600">
-            ({alerts.length})
-          </span>
-        </h2>
-      </div>
-
-      {alerts.length === 0 ? (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-          <p className="text-sm text-gray-500">{emptyMessage}</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {alerts.map((alert, index) => (
-            <AlertCard key={`${alert.drug_name}-${alert.gene_symbol}-${index}`} alert={alert} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
 
   const hasGreyAlerts = grey_alerts.length > 0;
 
