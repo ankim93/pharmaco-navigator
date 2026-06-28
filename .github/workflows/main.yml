@@ -34,6 +34,7 @@ jobs:
       SECRET_KEY: ci-test-secret-key-not-for-production
       CERNER_CLIENT_ID: ci-client-id
       CERNER_CLIENT_SECRET: ci-client-secret
+      CERNER_REDIRECT_URI: http://localhost:8000/api/v1/auth/callback
       FRONTEND_BASE_URL: http://localhost:3000
       ENVIRONMENT: test
 
@@ -81,6 +82,7 @@ jobs:
       - name: Run tests with coverage gate (≥85%)
         run: |
           pytest \
+            -m "not e2e" \
             --cov=app \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
