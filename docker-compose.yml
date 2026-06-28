@@ -6,8 +6,11 @@ services:
       POSTGRES_DB: pharmaco_navigator
       POSTGRES_USER: pharmaco_user
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    ports:
+      - "5433:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ./backend/db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
       - ./backend/db/insert_demo_patients.sql:/docker-entrypoint-initdb.d/02_demo_patients.sql
     networks:
       - pharmaco-network
@@ -15,7 +18,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U pharmaco_user -d pharmaco_navigator"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
 
   backend:
