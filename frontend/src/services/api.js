@@ -72,25 +72,6 @@ export const fetchPatientAlerts = async (patientId) => {
 };
 
 /**
- * Fetch patient's genomic profile summary
- * @param {string} patientId - Patient identifier
- * @returns {Promise<Object>} Genomic profile with phenotypes
- */
-export const fetchGenomicProfile = async (patientId) => {
-  if (!patientId) {
-    throw new Error('Patient ID is required');
-  }
-  
-  try {
-    const response = await apiClient.get(`/patient/${patientId}/genomic-profile`);
-    return response.data;
-  } catch (error) {
-    console.error('API Error - fetchGenomicProfile:', error.message);
-    throw error;
-  }
-};
-
-/**
  * Health check endpoint to verify backend availability
  * @returns {Promise<Object>} Health status
  */
@@ -106,6 +87,5 @@ export const checkBackendHealth = async () => {
 
 export default {
   fetchPatientAlerts,
-  fetchGenomicProfile,
   checkBackendHealth,
 };
