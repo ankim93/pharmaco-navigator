@@ -142,3 +142,127 @@ async def test_alerts_returns_503_when_db_unavailable(async_client: AsyncClient)
         response = await async_client.get(ALERTS_URL)
 
     assert response.status_code == 503
+
+
+@pytest.mark.unit
+async def test_summary_returns_500_on_phenotype_calculation_error(async_client: AsyncClient) -> None:
+    """PhenotypeCalculationError from service -> 500."""
+    from app.services.phenotype_service import PhenotypeCalculationError
+    svc = MagicMock()
+    svc.get_genomic_summary = AsyncMock(
+        side_effect=PhenotypeCalculationError("calc failure")
+    )
+    with patch("app.api.v1.patient.create_recommendation_service", return_value=svc):
+        response = await async_client.get(SUMMARY_URL)
+    assert response.status_code == 500
+
+
+@pytest.mark.unit
+async def test_summary_returns_500_on_unexpected_error(async_client: AsyncClient) -> None:
+    """Unhandled exception from service -> 500."""
+    svc = MagicMock()
+    svc.get_genomic_summary = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("app.api.v1.patient.create_recommendation_service", return_value=svc):
+        response = await async_client.get(SUMMARY_URL)
+    assert response.status_code == 500
+
+
+@pytest.mark.unit
+async def test_alerts_returns_503_on_cpic_connection_error(async_client: AsyncClient) -> None:
+    """CPICConnectionError -> 503 (CPIC and fallback both unavailable)."""
+    from app.services.cpic_service import CPICConnectionError
+    svc = MagicMock()
+    svc.generate_clinical_alerts = AsyncMock(
+        side_effect=CPICConnectionError("CPIC down", "timeout")
+    )
+    with patch("app.api.v1.patient.get_recommendation_service", return_value=svc):
+        response = await async_client.get(ALERTS_URL)
+    assert response.status_code == 503
+
+
+@pytest.mark.unit
+async def test_alerts_returns_500_on_recommendation_service_error(async_client: AsyncClient) -> None:
+    """RecommendationServiceError -> 500."""
+    from app.services.recommendation_service import RecommendationServiceError
+    svc = MagicMock()
+    svc.generate_clinical_alerts = AsyncMock(
+        side_effect=RecommendationServiceError("orchestration failure")
+    )
+    with patch("app.api.v1.patient.get_recommendation_service", return_value=svc):
+        response = await async_client.get(ALERTS_URL)
+    assert response.status_code == 500
+
+
+@pytest.mark.unit
+async def test_alerts_returns_500_on_unexpected_error(async_client: AsyncClient) -> None:
+    """Unhandled exception during alert generation -> 500."""
+    svc = MagicMock()
+    svc.generate_clinical_alerts = AsyncMock(side_effect=RuntimeError("unexpected"))
+    with patch("app.api.v1.patient.get_recommendation_service", return_value=svc):
+        response = await async_client.get(ALERTS_URL)
+    assert response.status_code == 500
+
+
+# GET /patient/health
+@pytest.mark.unit
+async def test_health_check_returns_200_when_all_services_healthy(async_client: AsyncClient) -> None:
+    """All services responding -> 200 with status=healthy."""
+    genomic_svc = AsyncMock()
+    genomic_svc.get_patient_genotypes = AsyncMock(
+        side_effect=GenomicDataNotFoundError("test patient absent")
+    )
+    cpic_svc = AsyncMock()
+    cpic_svc.check_api_health = AsyncMock(return_value=True)
+    rec_svc = MagicMock()
+    rec_svc.cpic_service = cpic_svc
+
+    with (
+        patch("app.services.genomic_service.create_genomic_service", return_value=genomic_svc),
+        patch("app.api.v1.patient.create_recommendation_service", return_value=rec_svc),
+    ):
+        response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+@pytest.mark.unit
+async def test_health_check_returns_503_when_db_unavailable(async_client: AsyncClient) -> None:
+    """Database connection fails -> 503 degraded."""
+    genomic_svc = AsyncMock()
+    genomic_svc.get_patient_genotypes = AsyncMock(
+        side_effect=GenomicConnectionError("Azure PostgreSQL unreachable")
+    )
+    cpic_svc = AsyncMock()
+    cpic_svc.check_api_health = AsyncMock(return_value=True)
+    rec_svc = MagicMock()
+    rec_svc.cpic_service = cpic_svc
+
+    with (
+        patch("app.services.genomic_service.create_genomic_service", return_value=genomic_svc),
+        patch("app.api.v1.patient.create_recommendation_service", return_value=rec_svc),
+    ):
+        response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 503
+
+
+@pytest.mark.unit
+async def test_health_check_returns_503_when_cpic_unavailable(async_client: AsyncClient) -> None:
+    """CPIC health check returns False -> 503 degraded."""
+    genomic_svc = AsyncMock()
+    genomic_svc.get_patient_genotypes = AsyncMock(
+        side_effect=GenomicDataNotFoundError("test patient absent")
+    )
+    cpic_svc = AsyncMock()
+    cpic_svc.check_api_health = AsyncMock(return_value=False)
+    rec_svc = MagicMock()
+    rec_svc.cpic_service = cpic_svc
+
+    with (
+        patch("app.services.genomic_service.create_genomic_service", return_value=genomic_svc),
+        patch("app.api.v1.patient.create_recommendation_service", return_value=rec_svc),
+    ):
+        response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 503
