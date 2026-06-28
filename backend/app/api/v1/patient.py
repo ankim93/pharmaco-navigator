@@ -160,7 +160,7 @@ async def get_patient_genomic_summary(patient_id: str) -> GenomicProfileSummary:
         logger.error(f"Phenotype calculation error for patient_id='{patient_id}': {e.message}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error calculating phenotypes: {e.message}"
+            detail="Error calculating phenotypes. Please try again later."
         )
     
     except Exception as e:
@@ -303,7 +303,7 @@ async def get_patient_clinical_alerts(
         logger.error(f"Alert generation error for patient_id='{patient_id}': {e.message}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error generating clinical alerts: {e.message}"
+            detail="Error generating clinical alerts. Please try again later."
         )
     
     except Exception as e:
