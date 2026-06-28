@@ -41,8 +41,14 @@ apiClient.interceptors.response.use(
         throw new Error('Backend service temporarily unavailable');
       }
       
-      if (status === 401 || status === 403) {
-        throw new Error('Authentication required or access denied');
+      if (status === 401) {
+        // Session expired — redirect to root so SMART launch can re-authenticate
+        window.location.href = '/';
+        return Promise.reject(new Error('Session expired. Redirecting to login.'));
+      }
+
+      if (status === 403) {
+        throw new Error('Access denied');
       }
       
       throw new Error(data.detail || `Server error (${status})`);
