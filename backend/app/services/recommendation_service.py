@@ -1,24 +1,36 @@
 """
-Recommendation Service for Clinical Decision Support.
-Orchestrates phenotype translation and CPIC guideline screening to generate Traffic Light dashboard alerts for drug-gene interactions.
+Phase 2 Recommendation Service — master orchestrator for Pharmaco Navigator CDSS.
+
+Key Phase 2 upgrades over Phase 1:
+  1. asyncio.gather — phenotype profile extraction and medication context lookups
+     run concurrently; neither blocks the other.
+  2. 15-second timeout safety window — each outbound CPIC call is wrapped in
+     asyncio.timeout(15); a TimeoutError or any network exception immediately
+     triggers the local fallback guideline engine.
+  3. Pessimistic Cascading Risk Escalation — if a compound has alerts at
+     multiple severity tiers across overlapping pathways, the dominant
+     (highest-priority) tier is applied and lower tiers are suppressed.
+  4. A-Z optimisation — all four alert buckets are sorted alphabetically by
+     medication name before JSON compilation.
 """
 
 import asyncio
 import logging
 import re
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
+
 from app.services.phenotype_service import (
     PhenotypeService,
-    create_phenotype_service,
     PhenotypeCalculationError,
+    create_phenotype_service,
 )
 from app.services.cpic_service import (
     CPICService,
-    create_cpic_service,
     CPICRecommendation,
     CPICConnectionError,
     CPICAPIError,
     CPICDataNotFoundError,
+    create_cpic_service,
 )
 from app.services.genomic_service import GenomicConnectionError
 from app.services.fhir_service import (
@@ -39,357 +51,442 @@ from app.core.fallback_guidelines import (
     is_fallback_available,
 )
 
+logger = logging.getLogger("pharmaco.navigator.recommendation")
 
-# Configure logging
-logger = logging.getLogger(__name__)
+# =========================================================================== #
+# Pessimistic Cascading Risk Escalation priority map                          #
+# =========================================================================== #
+# RED dominates all lower tiers; GREY loses to any data-bearing tier.
+
+_SEVERITY_RANK: dict[str, int] = {
+    "RED":    3,
+    "YELLOW": 2,
+    "GREEN":  1,
+    "GREY":   0,
+}
 
 
-# Custom Exceptions (Graceful Failure)
+# =========================================================================== #
+# Exceptions                                                                   #
+# =========================================================================== #
+
 class RecommendationServiceError(Exception):
-    """
-    Base exception for recommendation service errors.
-    """
-    def __init__(self, message: str, details: Optional[str] = None):
+    def __init__(self, message: str, details: Optional[str] = None) -> None:
         self.message = message
         self.details = details
         super().__init__(self.message)
 
 
-# RecommendationService Class
+# =========================================================================== #
+# Service                                                                      #
+# =========================================================================== #
+
 class RecommendationService:
     """
-    Orchestration service for generating clinical decision support alerts.
+    Phase 2 orchestrator for clinical decision support alerts.
+
+    Logging identifier: "pharmaco.navigator.recommendation"
     """
+
     def __init__(
         self,
         phenotype_service: Optional[PhenotypeService] = None,
         cpic_service: Optional[CPICService] = None,
-        fhir_service: Optional[FHIRService] = None
-    ):
-        """
-        Initialize RecommendationService for production mode.
-        """
+        fhir_service: Optional[FHIRService] = None,
+    ) -> None:
         self.phenotype_service = phenotype_service or create_phenotype_service()
         self.cpic_service = cpic_service or create_cpic_service()
         self.fhir_service = fhir_service
-        # Lazy-loaded per-gene substrate cache populated from CPIC /pair API
         self._gene_substrates_cache: Dict[str, List[str]] = {}
-        logger.info("RecommendationService initialized in production mode")
-    
+        logger.info("RecommendationService (Phase 2) initialised")
+
+    # ------------------------------------------------------------------ #
+    # Primary entry point                                                  #
+    # ------------------------------------------------------------------ #
+
     async def generate_clinical_alerts(
         self,
-        patient_id: str
+        patient_id: str,
     ) -> ClinicalAlertResponse:
         """
-        Generate Traffic Light clinical alerts for a patient.
+        Generate Traffic Light clinical alerts for *patient_id*.
+
+        Phase 2 flow:
+          1. asyncio.gather — phenotype profile + medication list fetched concurrently.
+          2. Per-gene CPIC lookups — each wrapped in asyncio.timeout(15); fallback on
+             TimeoutError or any network exception.
+          3. Pessimistic escalation — dominant severity tier retained per compound.
+          4. A-Z sort across all four alert buckets.
         """
-        logger.info(f"Generating clinical alerts for patient_id='{patient_id}'")
-        
+        logger.info("Generating clinical alerts for patient_id='%s'", patient_id)
+
         try:
-            # Check if this is a demo patient - use synthetic medications
-            if DemoFHIRService.is_demo_patient(patient_id):
-                logger.info(f"Using demo FHIR service for demo patient {patient_id}")
-                demo_bundle = DemoFHIRService.get_active_medications(patient_id)
-                if demo_bundle is None:
-                    demo_bundle = FHIRBundle(resourceType="Bundle", type="searchset", total=0, entry=[])
-                active_medication_names = self._extract_medication_names(demo_bundle)
-                logger.info(
-                    f"Retrieved {len(active_medication_names)} demo medications: "
-                    f"{', '.join(active_medication_names)}"
-                )
-            else:
-                # Fetch active medications from FHIR service
-                active_medication_names = None
-                if self.fhir_service:
-                    try:
-                        logger.info(
-                            f"Fetching active medications from FHIR for patient {patient_id}"
-                        )
-                        fhir_bundle = await self.fhir_service.get_active_medications(patient_id)
-                        active_medication_names = self._extract_medication_names(fhir_bundle)
-                        logger.info(
-                            f"Retrieved {len(active_medication_names)} active medications: "
-                            f"{', '.join(active_medication_names)}"
-                        )
-                    except (FHIRConnectionError, FHIRAuthenticationError) as e:
-                        logger.error(
-                            f"Failed to fetch medications from FHIR: {e}. "
-                            f"Cannot generate alerts without active medication list."
-                        )
-                        # Return empty alerts if FHIR fails
-                        return ClinicalAlertResponse(
-                            patient_id=patient_id,
-                            red_alerts=[],
-                            yellow_alerts=[],
-                            green_alerts=[],
-                            grey_alerts=[]
-                        )
-            
-            # Retrieve patient's phenotype profile
-            phenotype_profile = await self.phenotype_service.get_clinical_profile(
-                patient_id
+            # Phase 2: concurrent fetch — neither coroutine blocks the other.
+            phenotype_profile, active_medication_names = await asyncio.gather(
+                self.phenotype_service.get_clinical_profile(patient_id),
+                self._fetch_active_medications(patient_id),
             )
-            
+
             logger.info(
-                f"Retrieved phenotype profile with {len(phenotype_profile)} genes"
+                "Concurrent fetch complete — %d genes, %d medications",
+                len(phenotype_profile),
+                len(active_medication_names),
             )
-            
-            # Query CPIC for each gene-phenotype pair
-            all_recommendations: List[DrugRecommendation] = []
-            
-            for gene, profile in phenotype_profile.items():
-                phenotype = profile["phenotype"]
-                data_available = profile["data_available"]
-                
-                # Skip genes with missing data (will be handled as GREY)
-                if not data_available or phenotype == "Data Missing/Unknown":
-                    logger.info(
-                        f"Skipping CPIC query for {gene} - genomic data missing"
-                    )
-                    continue
-                
-                # Query CPIC for recommendations
-                gene_recommendations = await self._fetch_gene_recommendations(
-                    gene=gene,
-                    phenotype=phenotype
-                )
-                
-                all_recommendations.extend(gene_recommendations)
-                
-                logger.info(
-                    f"Retrieved {len(gene_recommendations)} recommendations "
-                    f"for {gene} ({phenotype})"
-                )
-            
-            # Filter to only active medications
-            if active_medication_names:
-                original_count = len(all_recommendations)
-                all_recommendations = [
-                    rec for rec in all_recommendations
-                    if self._medication_matches(rec.drug_name, active_medication_names)
-                ]
-                filtered_count = len(all_recommendations)
-                logger.info(
-                    f"Filtered {original_count} recommendations to "
-                    f"{filtered_count} active medications"
-                )
-            else:
-                # No active medications found
-                logger.info(f"No active medications found for patient {patient_id}")
-                return ClinicalAlertResponse(
-                    patient_id=patient_id,
-                    red_alerts=[],
-                    yellow_alerts=[],
-                    green_alerts=[],
-                    grey_alerts=[]
-                )
-            
-            # Categorize into Traffic Light alerts
+
+            if not active_medication_names:
+                logger.info("No active medications found for patient '%s'", patient_id)
+                return self._empty_response(patient_id)
+
+            # Concurrent substrate lookups for GREY annotation
             genes_in_profile = list(phenotype_profile.keys())
             substrate_results = await asyncio.gather(
                 *[self._get_gene_substrates(g) for g in genes_in_profile],
-                return_exceptions=True
+                return_exceptions=True,
             )
             gene_substrates: Dict[str, List[str]] = {
                 gene: (result if isinstance(result, list) else [])
                 for gene, result in zip(genes_in_profile, substrate_results)
             }
 
+            # Per-gene CPIC lookups (each with 15-second timeout + fallback)
+            cpic_tasks = [
+                self._fetch_with_timeout(gene, profile["phenotype"])
+                for gene, profile in phenotype_profile.items()
+                if profile["data_available"]
+                and profile["phenotype"] != "Data Missing/Unknown"
+            ]
+            batch_results = await asyncio.gather(*cpic_tasks, return_exceptions=True)
+            all_recs: List[DrugRecommendation] = [
+                rec
+                for batch in batch_results
+                if isinstance(batch, list)
+                for rec in batch
+            ]
+
+            # Filter to active medications only
+            all_recs = [
+                r for r in all_recs
+                if self._medication_matches(r.drug_name, active_medication_names)
+            ]
+            logger.info("Retained %d recommendations matching active medications", len(all_recs))
+
+            # Phase 2: pessimistic cascading risk escalation
+            escalated = self._apply_pessimistic_escalation(all_recs)
+
+            # Categorise into four buckets
             alert_response = self._categorize_alerts(
-                recommendations=all_recommendations,
+                recommendations=escalated,
                 patient_id=patient_id,
                 phenotype_profile=phenotype_profile,
                 active_medication_names=active_medication_names,
-                gene_substrates=gene_substrates
+                gene_substrates=gene_substrates,
             )
-            
-            # Sort alerts alphabetically by drug name within each category
+
+            # A-Z optimisation — sort all buckets alphabetically by medication name
             alert_response.red_alerts.sort(key=lambda x: x.drug_name)
             alert_response.yellow_alerts.sort(key=lambda x: x.drug_name)
             alert_response.green_alerts.sort(key=lambda x: x.drug_name)
             alert_response.grey_alerts.sort(key=lambda x: x.drug_name)
-            
+
             logger.info(
-                f"Generated {alert_response.total_medications} alerts: "
-                f"RED={len(alert_response.red_alerts)}, "
-                f"YELLOW={len(alert_response.yellow_alerts)}, "
-                f"GREEN={len(alert_response.green_alerts)}, "
-                f"GREY={len(alert_response.grey_alerts)}"
+                "Alerts for '%s': RED=%d YELLOW=%d GREEN=%d GREY=%d",
+                patient_id,
+                len(alert_response.red_alerts),
+                len(alert_response.yellow_alerts),
+                len(alert_response.green_alerts),
+                len(alert_response.grey_alerts),
             )
-            
             return alert_response
-        
+
         except GenomicConnectionError:
-            # Re-raise database errors for graceful failure
             raise
-        
-        except PhenotypeCalculationError as e:
-            logger.error(
-                f"Phenotype calculation failed: {e.message}",
-                exc_info=True
-            )
+
+        except PhenotypeCalculationError as exc:
+            logger.error("Phenotype calculation failed: %s", exc.message, exc_info=True)
             raise RecommendationServiceError(
-                message="Failed to generate clinical alerts - phenotype error",
-                details=e.message
-            )
-        
-        except Exception as e:
-            logger.error(
-                f"Unexpected error generating clinical alerts: {e}",
-                exc_info=True
-            )
+                message="Failed to generate clinical alerts — phenotype error",
+                details=exc.message,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error generating clinical alerts for '%s'", patient_id)
             raise RecommendationServiceError(
                 message="Failed to generate clinical alerts",
-                details=str(e)
+                details=str(exc),
+            ) from exc
+
+    # ------------------------------------------------------------------ #
+    # Genomic summary (Phase 1 compatibility)                             #
+    # ------------------------------------------------------------------ #
+
+    async def get_genomic_summary(
+        self,
+        patient_id: str,
+    ) -> GenomicProfileSummary:
+        phenotype_profile = await self.phenotype_service.get_clinical_profile(patient_id)
+        genes_analyzed: List[str] = []
+        genes_missing: List[str] = []
+        phenotypes: Dict[str, str] = {}
+
+        for gene, profile in phenotype_profile.items():
+            phenotypes[gene] = profile["phenotype"]
+            (genes_analyzed if profile["data_available"] else genes_missing).append(gene)
+
+        return GenomicProfileSummary(
+            patient_id=patient_id,
+            genes_analyzed=genes_analyzed,
+            genes_missing=genes_missing,
+            phenotypes=phenotypes,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Phase 2 — pessimistic cascading risk escalation                     #
+    # ------------------------------------------------------------------ #
+
+    def _apply_pessimistic_escalation(
+        self,
+        recs: List[DrugRecommendation],
+    ) -> List[DrugRecommendation]:
+        """
+        For each compound, retain only alerts at the dominant (highest-severity) tier.
+
+        Example: a compound with YELLOW on CYP2D6 and RED on SLCO1B1 appears in
+        red_alerts only — the YELLOW entry is suppressed.  If two pathways both
+        produce RED, both are preserved (gene context is retained for the clinician).
+        """
+        by_drug: Dict[str, List[DrugRecommendation]] = {}
+        for r in recs:
+            by_drug.setdefault(r.drug_name, []).append(r)
+
+        result: List[DrugRecommendation] = []
+        for drug_recs in by_drug.values():
+            max_rank = max(
+                _SEVERITY_RANK.get(str(r.alert_color), 0) for r in drug_recs
             )
-    
+            dominant = [
+                r for r in drug_recs
+                if _SEVERITY_RANK.get(str(r.alert_color), 0) == max_rank
+            ]
+            result.extend(dominant)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # CPIC fetch with 15-second timeout safety window                     #
+    # ------------------------------------------------------------------ #
+
+    async def _fetch_with_timeout(
+        self,
+        gene: str,
+        phenotype: str,
+    ) -> List[DrugRecommendation]:
+        """
+        Wrap the CPIC lookup in asyncio.timeout(15).  Any TimeoutError or
+        network exception triggers the local fallback guideline engine.
+        """
+        try:
+            async with asyncio.timeout(15.0):
+                return await self._fetch_gene_recommendations(gene, phenotype)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "CPIC API timed out for %s (%s) after 15 s — using fallback guidelines",
+                gene, phenotype,
+            )
+            return self._use_fallback_guidelines(gene, phenotype)
+
+    async def _fetch_gene_recommendations(
+        self,
+        gene: str,
+        phenotype: str,
+    ) -> List[DrugRecommendation]:
+        try:
+            cpic_recs = await self.cpic_service.fetch_recommendations(gene=gene, phenotype=phenotype)
+            recs = [self._convert_to_drug_recommendation(r, phenotype) for r in cpic_recs]
+            logger.info("CPIC API: %d recommendations for %s (%s)", len(recs), gene, phenotype)
+            return recs
+        except CPICDataNotFoundError:
+            logger.warning(
+                "No Level A/B data from CPIC API for %s (%s) — trying fallback",
+                gene, phenotype,
+            )
+            if is_fallback_available(gene):
+                return self._use_fallback_guidelines(gene, phenotype)
+            return []
+        except (CPICConnectionError, CPICAPIError) as exc:
+            logger.warning(
+                "CPIC API error for %s (%s): %s — using fallback",
+                gene, phenotype, exc.message,
+            )
+            if is_fallback_available(gene):
+                return self._use_fallback_guidelines(gene, phenotype)
+            logger.error("No fallback guidelines available for %s", gene)
+            return []
+
+    def _use_fallback_guidelines(
+        self,
+        gene: str,
+        phenotype: str,
+    ) -> List[DrugRecommendation]:
+        fallback_data = get_fallback_recommendations(gene, phenotype)
+        if not fallback_data:
+            logger.warning("Fallback guidelines empty for %s (%s)", gene, phenotype)
+            return []
+
+        recs = []
+        for item in fallback_data:
+            drug_name = item.get("drugname", "Unknown")
+            recommendation_text = item.get("recommendation", "")
+            classification = item.get("classification", "Unspecified")
+            guideline = item.get("guideline", {})
+            alert_color = self._determine_alert_color(recommendation_text, classification, phenotype)
+            recs.append(DrugRecommendation(
+                drug_name=drug_name,
+                gene_symbol=gene,
+                phenotype=phenotype,
+                alert_color=alert_color,
+                clinical_action=recommendation_text,
+                guideline_url=guideline.get("url", "https://cpicpgx.org/guidelines/"),
+                classification=classification,
+                guideline_level=guideline.get("level", "Unknown"),
+            ))
+
+        logger.info("Fallback: %d recommendations for %s (%s)", len(recs), gene, phenotype)
+        return recs
+
+    # ------------------------------------------------------------------ #
+    # Medication context                                                   #
+    # ------------------------------------------------------------------ #
+
+    async def _fetch_active_medications(self, patient_id: str) -> List[str]:
+        """
+        Return active medication names for the patient.
+        Handles demo patients, live FHIR, and graceful degradation on FHIR errors.
+        """
+        if DemoFHIRService.is_demo_patient(patient_id):
+            logger.info("Demo patient '%s' — using synthetic medication list", patient_id)
+            bundle = DemoFHIRService.get_active_medications(patient_id)
+            if bundle is None:
+                return []
+            return self._extract_medication_names(bundle)
+
+        if not self.fhir_service:
+            return []
+
+        try:
+            bundle = await self.fhir_service.get_active_medications(patient_id)
+            names = self._extract_medication_names(bundle)
+            logger.info("FHIR: %d active medications for '%s'", len(names), patient_id)
+            return names
+        except (FHIRConnectionError, FHIRAuthenticationError) as exc:
+            logger.error(
+                "FHIR medication fetch failed for '%s': %s — returning empty list",
+                patient_id, exc,
+            )
+            return []
+
     async def _get_gene_substrates(self, gene: str) -> List[str]:
-        """
-        Return all drug names paired with this gene according to CPIC.
-        """
         if gene not in self._gene_substrates_cache:
             self._gene_substrates_cache[gene] = (
                 await self.cpic_service.fetch_gene_substrates(gene)
             )
         return self._gene_substrates_cache[gene]
 
-    def _normalize_med_name(self, raw_name: str) -> str:
-        """
-        Strip dosage/form information from a Cerner medication display string.
-        """
-        # Format 1: "generic name (product description)" — strip parens and contents
-        name = raw_name.split('(')[0].strip()
-        # Format 2: trailing numeric dosage like "500 mg", "10 mcg/mL", "20 units"
-        name = re.sub(
-            r'\s+\d[\d.,]*\s*(mg|mcg|mcg/mL|mL|g|units?|%|IU)\b.*',
-            '',
-            name,
-            flags=re.IGNORECASE
-        ).strip()
-        return name if name else raw_name
+    # ------------------------------------------------------------------ #
+    # Alert construction                                                   #
+    # ------------------------------------------------------------------ #
 
-    async def _fetch_gene_recommendations(
+    def _categorize_alerts(
         self,
-        gene: str,
-        phenotype: str
-    ) -> List[DrugRecommendation]:
-        """
-        Fetch CPIC recommendations for a single gene-phenotype pair.
-        """
-        try:
-            # Try CPIC API first
-            cpic_recommendations = await self.cpic_service.fetch_recommendations(
-                gene=gene,
-                phenotype=phenotype
-            )
-            
-            # Convert CPIC API response to DrugRecommendation objects
-            recommendations = [
-                self._convert_to_drug_recommendation(rec, phenotype)
-                for rec in cpic_recommendations
-            ]
-            
-            logger.info(
-                f"Retrieved {len(recommendations)} recommendations from CPIC API "
-                f"for {gene} ({phenotype})"
-            )
-            
-            return recommendations
-        
-        except CPICDataNotFoundError:
-            # CPIC API returned no Level A/B data – try local fallback before giving up
-            logger.warning(
-                f"No Level A/B recommendations from CPIC API for {gene} ({phenotype}). "
-                f"Attempting fallback to local guidelines."
-            )
-            if is_fallback_available(gene):
-                fallback = self._use_fallback_guidelines(gene, phenotype)
-                if fallback:
-                    return fallback
-            # Neither API nor fallback had data – signal empty
-            return []
+        recommendations: List[DrugRecommendation],
+        patient_id: str,
+        phenotype_profile: Dict[str, Dict[str, Any]],
+        active_medication_names: Optional[List[str]] = None,
+        gene_substrates: Optional[Dict[str, List[str]]] = None,
+    ) -> ClinicalAlertResponse:
+        red_alerts: List[DrugRecommendation] = []
+        yellow_alerts: List[DrugRecommendation] = []
+        green_alerts: List[DrugRecommendation] = []
+        grey_alerts: List[DrugRecommendation] = []
 
-        except (CPICConnectionError, CPICAPIError) as e:
-            # CPIC API failed - fallback to local guidelines
-            logger.warning(
-                f"CPIC API failed for {gene} ({phenotype}): {e.message}. "
-                f"Attempting fallback to local guidelines."
-            )
-            
-            if is_fallback_available(gene):
-                return self._use_fallback_guidelines(gene, phenotype)
+        for rec in recommendations:
+            color = str(rec.alert_color)
+            if color == "RED":
+                red_alerts.append(rec)
+            elif color == "YELLOW":
+                yellow_alerts.append(rec)
+            elif color == "GREEN":
+                green_alerts.append(rec)
             else:
-                logger.error(
-                    f"No fallback guidelines available for {gene}"
+                grey_alerts.append(rec)
+
+        genes_with_recs = {rec.gene_symbol for rec in recommendations}
+
+        for gene, profile in phenotype_profile.items():
+            known_substrates = (gene_substrates or {}).get(gene, [])
+            affected = sorted([
+                m for m in (active_medication_names or [])
+                if any(
+                    m.lower() == sub.lower()
+                    or (len(m.split()[0]) > 4 and m.split()[0].lower() == sub.split()[0].lower())
+                    for sub in known_substrates
                 )
-                return []
-    
-    def _use_fallback_guidelines(
-        self,
-        gene: str,
-        phenotype: str
-    ) -> List[DrugRecommendation]:
-        """
-        Use local fallback guidelines when CPIC API is unavailable.
-        """
-        fallback_data = get_fallback_recommendations(gene, phenotype)
-        
-        if not fallback_data:
-            logger.warning(
-                f"No fallback guidelines found for {gene} ({phenotype})"
-            )
-            return []
-        
-        recommendations = []
-        for item in fallback_data:
-            drug_name = item.get("drugname", "Unknown")
-            recommendation_text = item.get("recommendation", "")
-            classification = item.get("classification", "Unspecified")
-            guideline = item.get("guideline", {})
-            guideline_level = guideline.get("level", "Unknown")
-            guideline_url = guideline.get("url", "https://cpicpgx.org/guidelines/")
-            
-            # Determine alert color
-            alert_color = self._determine_alert_color(
-                recommendation_text,
-                classification,
-                phenotype
-            )
-            
-            recommendations.append(
-                DrugRecommendation(
-                    drug_name=drug_name,
+            ])
+
+            if not profile["data_available"]:
+                grey_alerts.append(DrugRecommendation(
+                    drug_name=f"All {gene}-metabolized medications",
                     gene_symbol=gene,
-                    phenotype=phenotype,
-                    alert_color=alert_color,
-                    clinical_action=recommendation_text,
-                    guideline_url=guideline_url,
-                    classification=classification,
-                    guideline_level=guideline_level
-                )
-            )
-        
-        logger.info(
-            f"Retrieved {len(recommendations)} recommendations from "
-            f"fallback guidelines for {gene} ({phenotype})"
+                    phenotype="Data Missing/Unknown",
+                    alert_color="GREY",
+                    clinical_action=(
+                        f"Action Required: Order genomic testing for {gene}. "
+                        "Unable to provide pharmacogenomic guidance without genotype data."
+                    ),
+                    guideline_url="https://cpicpgx.org/guidelines/",
+                    classification="Data Missing",
+                    guideline_level="N/A",
+                    affected_medications=affected or None,
+                ))
+            elif gene not in genes_with_recs:
+                grey_alerts.append(DrugRecommendation(
+                    drug_name=f"No CPIC Guidelines – {gene}",
+                    gene_symbol=gene,
+                    phenotype=profile.get("phenotype", "Unknown"),
+                    alert_color="GREY",
+                    clinical_action=(
+                        f"No CPIC Level A/B guidelines available for {gene} "
+                        f"({profile.get('phenotype', 'Unknown')}) with current medications. "
+                        "Consult a clinical pharmacist before prescribing."
+                    ),
+                    guideline_url="https://cpicpgx.org/genes-drugs/",
+                    classification="No CPIC Level A/B Guidelines",
+                    guideline_level="N/A",
+                    affected_medications=None,
+                ))
+
+        total_medications = (
+            len(active_medication_names)
+            if active_medication_names
+            else len(red_alerts) + len(yellow_alerts) + len(green_alerts)
         )
-        
-        return recommendations
-    
+
+        return ClinicalAlertResponse(
+            patient_id=patient_id,
+            red_alerts=red_alerts,
+            yellow_alerts=yellow_alerts,
+            green_alerts=green_alerts,
+            grey_alerts=grey_alerts,
+            active_medications=sorted(active_medication_names) if active_medication_names else [],
+            total_medications=total_medications,
+        )
+
     def _convert_to_drug_recommendation(
         self,
         cpic_rec: CPICRecommendation,
-        phenotype: str
+        phenotype: str,
     ) -> DrugRecommendation:
-        """
-        Convert CPICRecommendation to DrugRecommendation with Traffic Light color.
-        """
         alert_color = self._determine_alert_color(
-            cpic_rec.recommendation,
-            cpic_rec.classification,
-            phenotype
+            cpic_rec.recommendation, cpic_rec.classification, phenotype
         )
-        
         return DrugRecommendation(
             drug_name=cpic_rec.drug_name,
             gene_symbol=cpic_rec.gene_symbol,
@@ -398,254 +495,101 @@ class RecommendationService:
             clinical_action=cpic_rec.recommendation,
             guideline_url=cpic_rec.guideline_url,
             classification=cpic_rec.classification,
-            guideline_level=cpic_rec.guideline_level
+            guideline_level=cpic_rec.guideline_level,
         )
-    
+
     def _determine_alert_color(
         self,
         recommendation: str,
         classification: str,
-        phenotype: str = ""
+        phenotype: str = "",
     ) -> AlertColor:
-        """
-        Determine Traffic Light color based on recommendation text, classification,
-        and phenotype.
-        """
-        recommendation_lower = recommendation.lower()
-        classification_lower = classification.lower()
-        phenotype_lower = phenotype.lower()
+        rec_lower = recommendation.lower()
+        cls_lower = classification.lower()
+        phe_lower = phenotype.lower()
+        is_poor = "poor" in phe_lower
 
-        # RED: High Risk (avoid, contraindicated, alternative)
-        is_poor_phenotype = "poor" in phenotype_lower
-        red_keywords = ["avoid", "contraindicated", "alternative"]
-        if any(keyword in recommendation_lower for keyword in red_keywords):
-            if "strong" in classification_lower or is_poor_phenotype:
-                return "RED"
-            else:
-                return "YELLOW"
-        
-        # YELLOW: Moderate Risk (dose adjustment, monitoring, etc.)
-        yellow_keywords = [
-            "dose reduction",
-            "reduction of",
-            "lower dose",
-            "adjustment",
-            "adjust",
-            "monitor",
-            "titrate",
-            "caution"
-        ]
-        if any(keyword in recommendation_lower for keyword in yellow_keywords):
-            if is_poor_phenotype:
-                return "RED"
-            return "YELLOW"
-        
-        # GREEN: No Known Interaction (standard, label-recommended, no change)
-        green_keywords = [
-            "standard",
-            "label-recommended",
-            "no change",
-            "initiate therapy",
-            "use label"
-        ]
-        if any(keyword in recommendation_lower for keyword in green_keywords):
+        if any(kw in rec_lower for kw in ("avoid", "contraindicated", "alternative")):
+            return "RED" if ("strong" in cls_lower or is_poor) else "YELLOW"
+
+        if any(kw in rec_lower for kw in (
+            "dose reduction", "reduction of", "lower dose",
+            "adjustment", "adjust", "monitor", "titrate", "caution",
+        )):
+            return "RED" if is_poor else "YELLOW"
+
+        if any(kw in rec_lower for kw in (
+            "standard", "label-recommended", "no change",
+            "initiate therapy", "use label",
+        )):
             return "GREEN"
-        
-        # Default to YELLOW for uncertain cases
+
         logger.warning(
-            f"Could not determine alert color for recommendation: "
-            f"'{recommendation[:50]}...' - defaulting to YELLOW"
+            "Unable to classify recommendation '%.60s...' — defaulting to YELLOW",
+            recommendation,
         )
         return "YELLOW"
-    
-    def _categorize_alerts(
-        self,
-        recommendations: List[DrugRecommendation],
-        patient_id: str,
-        phenotype_profile: Dict[str, Dict[str, Any]],
-        active_medication_names: Optional[List[str]] = None,
-        gene_substrates: Optional[Dict[str, List[str]]] = None
-    ) -> ClinicalAlertResponse:
-        """
-        Categorize drug recommendations into Traffic Light buckets.
-        """
-        red_alerts: List[DrugRecommendation] = []
-        yellow_alerts: List[DrugRecommendation] = []
-        green_alerts: List[DrugRecommendation] = []
-        grey_alerts: List[DrugRecommendation] = []
-        
-        # Categorize existing recommendations
-        for rec in recommendations:
-            if rec.alert_color == "RED":
-                red_alerts.append(rec)
-            elif rec.alert_color == "YELLOW":
-                yellow_alerts.append(rec)
-            elif rec.alert_color == "GREEN":
-                green_alerts.append(rec)
-            elif rec.alert_color == "GREY":
-                grey_alerts.append(rec)
-        
-        # Track which genes produced at least one recommendation (any color)
-        genes_with_recommendations = {rec.gene_symbol for rec in recommendations}
-        
-        # Handle GREY status for missing genomic data
-        for gene, profile in phenotype_profile.items():
-            # Determine affected medications
-            known_substrates = (gene_substrates or {}).get(gene, [])
-            affected = sorted([
-                m for m in (active_medication_names or [])
-                if any(
-                    m.lower() == sub.lower() or
-                    (len(m.split()[0]) > 4 and m.split()[0].lower() == sub.split()[0].lower())
-                    for sub in known_substrates
-                )
-            ])
 
-            if not profile["data_available"]:
-                # Request genomic testing if patient has no genomic data
-                grey_alerts.append(DrugRecommendation(
-                    drug_name=f"All {gene}-metabolized medications",
-                    gene_symbol=gene,
-                    phenotype="Data Missing/Unknown",
-                    alert_color="GREY",
-                    clinical_action=(
-                        f"Action Required: Order genomic testing for {gene}. "
-                        f"Unable to provide pharmacogenomic guidance without genotype data."
-                    ),
-                    guideline_url="https://cpicpgx.org/guidelines/",
-                    classification="Data Missing",
-                    guideline_level="N/A",
-                    affected_medications=affected if affected else None
-                ))
-            elif gene not in genes_with_recommendations:
-                # Genomic data exists but no CPIC Level A/B guidelines matched current meds
-                phenotype = profile.get("phenotype", "Unknown")
-                grey_alerts.append(DrugRecommendation(
-                    drug_name=f"No CPIC Guidelines – {gene}",
-                    gene_symbol=gene,
-                    phenotype=phenotype,
-                    alert_color="GREY",
-                    clinical_action=(
-                        f"No CPIC Level A/B clinical guidelines available for {gene} "
-                        f"({phenotype}) with current medications. "
-                        f"Consult a clinical pharmacist before prescribing."
-                    ),
-                    guideline_url=f"https://cpicpgx.org/genes-drugs/",
-                    classification="No CPIC Level A/B Guidelines",
-                    guideline_level="N/A",
-                    affected_medications=None
-                ))
-        
-        total_medications = len(active_medication_names) if active_medication_names else len(red_alerts) + len(yellow_alerts) + len(green_alerts)
-        
-        return ClinicalAlertResponse(
-            patient_id=patient_id,
-            red_alerts=red_alerts,
-            yellow_alerts=yellow_alerts,
-            green_alerts=green_alerts,
-            grey_alerts=grey_alerts,
-            active_medications=sorted(active_medication_names) if active_medication_names else [],
-            total_medications=total_medications
-        )
-    
-    async def get_genomic_summary(
-        self,
-        patient_id: str
-    ) -> GenomicProfileSummary:
-        """
-        Generate genomic profile summary for dashboard overview.
-        """
-        phenotype_profile = await self.phenotype_service.get_clinical_profile(
-            patient_id
-        )
-        
-        genes_analyzed: List[str] = []
-        genes_missing: List[str] = []
-        phenotypes: Dict[str, str] = {}
-        
-        for gene, profile in phenotype_profile.items():
-            phenotypes[gene] = profile["phenotype"]
-            
-            if profile["data_available"]:
-                genes_analyzed.append(gene)
-            else:
-                genes_missing.append(gene)
-        
-        return GenomicProfileSummary(
-            patient_id=patient_id,
-            genes_analyzed=genes_analyzed,
-            genes_missing=genes_missing,
-            phenotypes=phenotypes
-        )
-    
+    # ------------------------------------------------------------------ #
+    # Utility helpers                                                      #
+    # ------------------------------------------------------------------ #
+
     def _extract_medication_names(self, fhir_bundle: FHIRBundle) -> List[str]:
-        """
-        Extract medication names from FHIR Bundle response.
-        """
-        seen: set = set()
-        medication_names = []
-        
+        seen: set[str] = set()
+        names: List[str] = []
         if not fhir_bundle.entry:
-            logger.warning("FHIR Bundle contains no entries")
-            return medication_names
-        
+            return names
         for entry in fhir_bundle.entry:
             if not entry.resource:
                 continue
-            
             resource = entry.resource
-            resource_type = resource.get("resourceType")
-            
-            if resource_type != "MedicationRequest":
+            if resource.get("resourceType") != "MedicationRequest":
                 continue
-            
-            # Extract medication name
-            medication_name = None
-            
+            medication_name: Optional[str] = None
             if "medicationCodeableConcept" in resource:
-                med_concept = resource["medicationCodeableConcept"]
-                if "text" in med_concept:
-                    medication_name = med_concept["text"]
-                elif "coding" in med_concept and len(med_concept["coding"]) > 0:
-                    medication_name = med_concept["coding"][0].get("display")
-            
+                concept = resource["medicationCodeableConcept"]
+                medication_name = concept.get("text") or (
+                    concept.get("coding", [{}])[0].get("display") if concept.get("coding") else None
+                )
             elif "medicationReference" in resource:
-                med_ref = resource["medicationReference"]
-                if "display" in med_ref:
-                    medication_name = med_ref["display"]
-            
+                medication_name = resource["medicationReference"].get("display")
             if medication_name:
-                normalized = self._normalize_med_name(medication_name).lower()
-                if normalized not in seen:
-                    seen.add(normalized)
-                    medication_names.append(normalized)
-        
-        logger.info(f"Extracted {len(medication_names)} unique medication names from FHIR Bundle")
-        return medication_names
-    
+                normalised = self._normalize_med_name(medication_name).lower()
+                if normalised not in seen:
+                    seen.add(normalised)
+                    names.append(normalised)
+        logger.info("Extracted %d unique medication names from FHIR Bundle", len(names))
+        return names
+
+    def _normalize_med_name(self, raw_name: str) -> str:
+        name = raw_name.split("(")[0].strip()
+        name = re.sub(
+            r"\s+\d[\d.,]*\s*(mg|mcg|mcg/mL|mL|g|units?|%|IU)\b.*",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        ).strip()
+        return name if name else raw_name
+
     def _medication_matches(self, drug_name: str, active_medications: List[str]) -> bool:
-        """
-        Check if a drug name matches any active medication.
-        """
-        drug_normalized = drug_name.strip().lower()
-        
-        for active_med in active_medications:
-            # Exact match
-            if drug_normalized == active_med:
+        drug_lower = drug_name.strip().lower()
+        for med in active_medications:
+            if drug_lower == med:
                 return True
-            
-            # First-word match
-            drug_base = drug_normalized.split()[0]
-            active_base = active_med.split()[0]
-            if len(drug_base) > 4 and drug_base == active_base:
+            drug_base, med_base = drug_lower.split()[0], med.split()[0]
+            if len(drug_base) > 4 and drug_base == med_base:
                 return True
-        
         return False
 
+    def _empty_response(self, patient_id: str) -> ClinicalAlertResponse:
+        return ClinicalAlertResponse(
+            patient_id=patient_id,
+            red_alerts=[],
+            yellow_alerts=[],
+            green_alerts=[],
+            grey_alerts=[],
+        )
 
-# Factory Function
+
 def create_recommendation_service() -> RecommendationService:
-    """
-    Factory function to create a RecommendationService instance.
-    """
     return RecommendationService()
