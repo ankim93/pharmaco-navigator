@@ -7,6 +7,15 @@ from typing import Optional, Any
 from fastapi import Request, HTTPException, status
 
 
+def is_demo_patient_id(patient_id: str) -> bool:
+    """
+    Return True for synthetic demo patient IDs (DEMO001–DEMO007).
+    Demo patients bypass live Cerner OAuth — the recommendation engine
+    serves them via DemoFHIRService without an active session token.
+    """
+    return patient_id.upper().startswith("DEMO")
+
+
 def get_session_value(request: Request, key: str, default: Optional[Any] = None) -> Any:
     """
     Safely retrieve a value from session storage

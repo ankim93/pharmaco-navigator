@@ -262,20 +262,32 @@ ON CONFLICT (patient_id, gene_symbol) DO UPDATE SET
 -- 7. Atomoxetine (RED: Poor CYP2D6 -> reduce dose 50%)
 
 
+-- DEMO PATIENT 7: "No Genomic Data Patient" (ID: DEMO007)
+-- Profile: Patient with no pharmacogenomic testing on file.
+-- Genotype: No rows inserted — absence of rows triggers all-GREY alert cards.
+-- Expected Alerts: All GREY ("Action Required: Order genomic testing")
+-- Use Case: Shows the system's behaviour when zero genomic data is available.
+--
+-- No INSERT statements for DEMO007 by design.  The PhenotypeService raises
+-- GenomicDataNotFoundError when the patient_id has no rows, which maps to
+-- data_available=False for all four genes and produces four GREY cards.
+
+
 -- Verification Query: Display all demo patients
 
-SELECT 
+SELECT
     patient_id,
     gene_symbol,
     allele_1,
     allele_2,
-    CASE 
+    CASE
         WHEN patient_id = 'DEMO001' THEN 'High-Risk Polypharmacy (8 meds)'
         WHEN patient_id = 'DEMO002' THEN 'Ideal Candidate (6 meds - all GREEN)'
         WHEN patient_id = 'DEMO003' THEN 'Ultrarapid Metabolizer (5 meds)'
         WHEN patient_id = 'DEMO004' THEN 'Mixed Phenotype (7 meds)'
         WHEN patient_id = 'DEMO005' THEN 'Cardiovascular Focus (6 meds)'
         WHEN patient_id = 'DEMO006' THEN 'Psychiatric Focus (7 meds)'
+        WHEN patient_id = 'DEMO007' THEN 'No Genomic Data (5 meds - all GREY)'
     END AS description
 FROM genotypes
 WHERE patient_id LIKE 'DEMO%'

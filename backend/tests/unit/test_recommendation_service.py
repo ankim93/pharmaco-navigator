@@ -189,3 +189,93 @@ class TestRecommendationServiceHelpers:
         assert "codeine"  in affected_lower
         assert "tramadol" in affected_lower
         assert "aspirin"  not in affected_lower
+
+
+@pytest.mark.unit
+class TestRecommendationServiceAlertColor:
+    """Edge-case coverage for _determine_alert_color unclassifiable path."""
+
+    def _service(self):
+        from app.services.recommendation_service import RecommendationService
+        return RecommendationService()
+
+    def test_unclassifiable_recommendation_defaults_to_yellow(self):
+        """Recommendation text with no recognised keywords -> YELLOW default."""
+        svc = self._service()
+        result = svc._determine_alert_color(
+            "Discuss with the prescribing pharmacist.",
+            "Unspecified",
+            "Normal Metabolizer",
+        )
+        assert result == "YELLOW"
+
+    def test_apply_pessimistic_escalation_promotes_to_dominant_tier(self):
+        """If a compound has YELLOW and RED alerts, only RED should survive."""
+        from app.models.recommendation import DrugRecommendation
+        svc = self._service()
+        recs = [
+            DrugRecommendation(
+                drug_name="Simvastatin", gene_symbol="SLCO1B1",
+                phenotype="Poor Function", alert_color="RED",
+                clinical_action="Avoid.", guideline_url="http://cpic",
+            ),
+            DrugRecommendation(
+                drug_name="Simvastatin", gene_symbol="CYP2D6",
+                phenotype="Normal Metabolizer", alert_color="YELLOW",
+                clinical_action="Monitor.", guideline_url="http://cpic",
+            ),
+        ]
+        escalated = svc._apply_pessimistic_escalation(recs)
+        assert all(r.alert_color == "RED" for r in escalated)
+        assert len(escalated) == 1
+
+    def test_extract_medication_names_handles_medication_reference(self):
+        """Resources with medicationReference (not codeable concept) are extracted."""
+        from app.models.schemas import FHIRBundle, FHIRBundleEntry
+        svc = self._service()
+        bundle = FHIRBundle(
+            resourceType="Bundle",
+            type="searchset",
+            total=1,
+            entry=[
+                FHIRBundleEntry(
+                    fullUrl="http://test/1",
+                    resource={
+                        "resourceType": "MedicationRequest",
+                        "medicationReference": {"display": "Warfarin"},
+                    },
+                )
+            ],
+        )
+        names = svc._extract_medication_names(bundle)
+        assert "warfarin" in names
+
+    def test_extract_medication_names_deduplicates(self):
+        """Duplicate medication entries are collapsed to a single name."""
+        from app.models.schemas import FHIRBundle, FHIRBundleEntry
+        svc = self._service()
+        entry = FHIRBundleEntry(
+            fullUrl="http://test/1",
+            resource={
+                "resourceType": "MedicationRequest",
+                "medicationCodeableConcept": {"text": "Codeine"},
+            },
+        )
+        bundle = FHIRBundle(
+            resourceType="Bundle",
+            type="searchset",
+            total=2,
+            entry=[entry, entry],
+        )
+        names = svc._extract_medication_names(bundle)
+        assert names.count("codeine") == 1
+
+
+@pytest.mark.unit
+class TestRecommendationServiceException:
+    def test_recommendation_service_error_stores_message(self):
+        from app.services.recommendation_service import RecommendationServiceError
+        err = RecommendationServiceError("msg", "details")
+        assert err.message == "msg"
+        assert err.details == "details"
+        assert str(err) == "msg"

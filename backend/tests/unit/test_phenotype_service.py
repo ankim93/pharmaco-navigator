@@ -196,3 +196,63 @@ class TestPhenotypeServiceGetClinicalProfile:
         for gene in ["CYP2D6", "CYP2C19", "SLCO1B1", "ABCB1"]:
             assert profile[gene]["data_available"] is False
             assert profile[gene]["phenotype"] == "Data Missing/Unknown"
+
+
+# 4. calculate_phenotypes — batch public API
+@pytest.mark.unit
+class TestPhenotypeServiceCalculatePhenotypes:
+    """Tests for the synchronous batch calculate_phenotypes() method."""
+
+    def _service(self):
+        from app.services.phenotype_service import PhenotypeService
+        return PhenotypeService()
+
+    def test_dict_genotypes_metabolic_genes(self):
+        svc = self._service()
+        genotypes = [
+            {"gene_symbol": "CYP2D6",  "allele_1": "*1", "allele_2": "*1"},
+            {"gene_symbol": "CYP2C19", "allele_1": "*2", "allele_2": "*2"},
+        ]
+        result = svc.calculate_phenotypes(genotypes)
+        assert result["CYP2D6"]  == "Normal Metabolizer"
+        assert result["CYP2C19"] == "Poor Metabolizer"
+
+    def test_dict_genotypes_transporter_genes(self):
+        svc = self._service()
+        genotypes = [
+            {"gene_symbol": "SLCO1B1", "allele_1": "*5", "allele_2": "*5"},
+            {"gene_symbol": "ABCB1",   "allele_1": "C",  "allele_2": "T"},
+        ]
+        result = svc.calculate_phenotypes(genotypes)
+        assert result["SLCO1B1"] == "Poor Function"
+        assert result["ABCB1"]   == "Intermediate Transport Function"
+
+    def test_missing_allele_fields_produce_data_missing(self):
+        svc = self._service()
+        genotypes = [
+            {"gene_symbol": "CYP2D6", "allele_1": None, "allele_2": None},
+        ]
+        result = svc.calculate_phenotypes(genotypes)
+        assert result["CYP2D6"] == "Data Missing/Unknown"
+
+    def test_unmapped_slco1b1_diplotype_falls_back_to_normal(self):
+        """An unmapped categorical diplotype must fall back to 'Normal Function'."""
+        svc = self._service()
+        genotypes = [{"gene_symbol": "SLCO1B1", "allele_1": "*99", "allele_2": "*99"}]
+        result = svc.calculate_phenotypes(genotypes)
+        assert result["SLCO1B1"] == "Normal Function"
+
+    def test_out_of_scope_gene_is_skipped(self):
+        """Genes outside the scope panel must not appear in the result dict."""
+        svc = self._service()
+        genotypes = [{"gene_symbol": "CYP3A4", "allele_1": "*1", "allele_2": "*1"}]
+        result = svc.calculate_phenotypes(genotypes)
+        assert "CYP3A4" not in result
+
+    def test_genotype_orm_object_is_accepted(self):
+        """calculate_phenotypes must also accept Genotype ORM objects (not just dicts)."""
+        from app.models.genotype import Genotype
+        svc = self._service()
+        g = Genotype(patient_id="P1", gene_symbol="CYP2D6", allele_1="*4", allele_2="*4")
+        result = svc.calculate_phenotypes([g])
+        assert result["CYP2D6"] == "Poor Metabolizer"
