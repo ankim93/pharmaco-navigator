@@ -7,6 +7,7 @@ should use ON CONFLICT (patient_id, gene_symbol) DO UPDATE rather than a
 blind INSERT to avoid violating the constraint.
 """
 
+from datetime import datetime
 from typing import Optional
 from datetime import datetime
 from sqlalchemy import UniqueConstraint
