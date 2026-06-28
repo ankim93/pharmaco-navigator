@@ -3,6 +3,7 @@ SMART on FHIR authentication endpoints.
 Implements OAuth 2.0 authorization flow with BFF pattern for secure credential management.
 """
 
+import logging
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import RedirectResponse
 from typing import Optional
@@ -25,6 +26,8 @@ from app.core.session import (
 
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 @router.get("/launch")
 async def smart_launch(
@@ -83,9 +86,10 @@ async def auth_callback(
     """
     # Handle authorization errors
     if error is not None:
+        logger.warning("OAuth authorization error returned by identity provider: %s", error)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authorization failed: {error}"
+            detail="Authorization failed. Please try again."
         )
     
     # Validate state parameter (CSRF protection)
@@ -129,9 +133,14 @@ async def auth_callback(
             
             # Check for successful token exchange
             if token_response.status_code != 200:
+                logger.error(
+                    "Token exchange failed: status=%s body=%s",
+                    token_response.status_code,
+                    token_response.text,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Token exchange failed: {token_response.text}"
+                    detail="Authentication failed. Please try again."
                 )
             
             # Parse response with type-safe Pydantic model
@@ -144,9 +153,10 @@ async def auth_callback(
             detail="Token exchange request timed out"
         )
     except httpx.RequestError as exc:
+        logger.error("Failed to connect to Cerner authorization server: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to connect to Cerner authorization server: {str(exc)}"
+            detail="Authentication service temporarily unavailable. Please try again later."
         )
     
     # Store validated token response in session using type-safe helper

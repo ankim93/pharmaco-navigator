@@ -3,6 +3,7 @@ FHIR resource endpoints.
 Handles patient demographics and medication synchronization from Cerner EHR.
 """
 
+import logging
 from fastapi import APIRouter, Request, HTTPException, status
 import httpx
 from app.models.schemas import FHIRPatient, FHIRBundle
@@ -14,6 +15,8 @@ from app.core.session import (
 
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 @router.get("/patient/{patient_id}")
 async def get_patient(patient_id: str, request: Request) -> FHIRPatient:
@@ -41,11 +44,16 @@ async def get_patient(patient_id: str, request: Request) -> FHIRPatient:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Patient {patient_id} not found in FHIR server"
                 )
-            
+
             if response.status_code != 200:
+                logger.error(
+                    "FHIR API error fetching patient: status=%s body=%s",
+                    response.status_code,
+                    response.text,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"FHIR API error: {response.status_code} - {response.text}"
+                    detail="FHIR data unavailable. Please try again later."
                 )
             
             # Parse response with type-safe Pydantic model
@@ -58,9 +66,10 @@ async def get_patient(patient_id: str, request: Request) -> FHIRPatient:
             detail="FHIR API request timed out"
         )
     except httpx.RequestError as exc:
+        logger.error("FHIR connection error fetching patient: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service Connection Error: Failed to connect to FHIR server - {str(exc)}"
+            detail="FHIR service temporarily unavailable."
         )
 
 
@@ -90,10 +99,21 @@ async def get_medications(patient_id: str, request: Request) -> FHIRBundle:
                 timeout=10.0
             )
             
+            if response.status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No medication records found for patient {patient_id}"
+                )
+
             if response.status_code != 200:
+                logger.error(
+                    "FHIR API error fetching medications: status=%s body=%s",
+                    response.status_code,
+                    response.text,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"FHIR API error: {response.status_code} - {response.text}"
+                    detail="FHIR data unavailable. Please try again later."
                 )
             
             # Parse response with type-safe Pydantic model
@@ -106,7 +126,8 @@ async def get_medications(patient_id: str, request: Request) -> FHIRBundle:
             detail="FHIR API request timed out"
         )
     except httpx.RequestError as exc:
+        logger.error("FHIR connection error fetching medications: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service Connection Error: Failed to connect to FHIR server - {str(exc)}"
+            detail="FHIR service temporarily unavailable."
         )
