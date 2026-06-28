@@ -37,10 +37,7 @@ export const useLaunchContext = () => {
       setError(null);
       setIsReady(true);
 
-      console.log('[SMART Launch Context] Patient ID extracted:', trimmedPatientId);
-
-    } catch (err) {
-      console.error('[SMART Launch Context] Error parsing URL:', err);
+    } catch {
       setError('Failed to parse launch context from URL');
       setIsReady(true);
     }
