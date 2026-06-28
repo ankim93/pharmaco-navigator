@@ -73,16 +73,29 @@ _TRANSPORTER_GENES = frozenset({"SLCO1B1", "ABCB1"})
 # ("*15", "*5"), not ("*5", "*15").
 _CATEGORICAL_MAPS: dict[str, dict[tuple[str, str], str]] = {
     "SLCO1B1": {
-        ("*1",  "*1"):  "Normal Function",
-        ("*1",  "*5"):  "Decreased Function",    # sorted: *1 < *5
-        ("*1",  "*15"): "Decreased Function",    # sorted: *1 < *15
-        ("*1",  "*17"): "Decreased Function",
-        ("*1",  "*45"): "Decreased Function",
-        ("*5",  "*5"):  "Poor Function",         # spec example: (*5,*5) -> Poor Function
-        ("*15", "*5"):  "Poor Function",         # sorted: *15 < *5 (lex)
-        ("*15", "*15"): "Poor Function",
-        ("*17", "*17"): "Poor Function",
-        ("*45", "*45"): "Poor Function",
+        # *1 (canonical normal-function reference allele)
+        ("*1",   "*1"):   "Normal Function",
+        ("*1",   "*5"):   "Decreased Function",   # sorted: *1 < *5
+        ("*1",   "*15"):  "Decreased Function",   # sorted: *1 < *15
+        ("*1",   "*17"):  "Decreased Function",
+        ("*1",   "*45"):  "Decreased Function",
+        # *1A/*1B sub-alleles — same function as *1 per CPIC
+        ("*1A",  "*1A"):  "Normal Function",
+        ("*1A",  "*1B"):  "Normal Function",      # sorted: *1A < *1B
+        ("*1B",  "*1B"):  "Normal Function",
+        ("*1A",  "*5"):   "Decreased Function",   # sorted: *1A < *5
+        ("*1A",  "*45"):  "Decreased Function",   # sorted: *1A < *45
+        ("*15",  "*1A"):  "Decreased Function",   # sorted: *15 < *1A (lex '5' < 'A')
+        ("*17",  "*1A"):  "Decreased Function",   # sorted: *17 < *1A (lex '7' < 'A')
+        ("*1B",  "*5"):   "Decreased Function",   # sorted: *1B < *5
+        ("*15",  "*1B"):  "Decreased Function",   # sorted: *15 < *1B
+        ("*17",  "*1B"):  "Decreased Function",
+        # Homozygous/compound poor-function
+        ("*5",   "*5"):   "Poor Function",        # spec example
+        ("*15",  "*5"):   "Poor Function",        # sorted: *15 < *5 (lex)
+        ("*15",  "*15"):  "Poor Function",
+        ("*17",  "*17"):  "Poor Function",
+        ("*45",  "*45"):  "Poor Function",
     },
     # ABCB1 uses both SNP-level (C/T) and star-allele notation.
     # Phenotype labels include "Transport Function" per the ABCB1 clinical convention.
