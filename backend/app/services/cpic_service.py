@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # API Configuration
 CPIC_API_BASE_URL = "https://api.cpicpgx.org/v1"
 CPIC_RECOMMENDATION_ENDPOINT = f"{CPIC_API_BASE_URL}/recommendation"
-CPIC_API_TIMEOUT = 10.0  # seconds
+CPIC_API_TIMEOUT = 15.0  # seconds — Phase 2 outbound safety window
 
 
 # Custom Exceptions (Graceful Failure)
@@ -146,15 +146,21 @@ class CPICService:
                     params=params
                 )
                 
-                # Check for HTTP errors
+                # Check for HTTP errors — 429 is treated as a connection error
+                # to trigger the local fallback guideline engine upstream.
+                if response.status_code == 429:
+                    logger.warning("CPIC API rate-limited (429) — triggering fallback")
+                    raise CPICConnectionError(
+                        message="CPIC API rate limit exceeded",
+                        details="HTTP 429 Too Many Requests"
+                    )
                 if response.status_code != 200:
                     logger.error(
-                        f"CPIC API returned status {response.status_code}: "
-                        f"{response.text}"
+                        "CPIC API returned status %s", response.status_code
                     )
                     raise CPICAPIError(
                         message=f"CPIC API error: HTTP {response.status_code}",
-                        details=response.text
+                        details="Upstream error"
                     )
                 
                 # Parse JSON response

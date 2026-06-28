@@ -56,7 +56,7 @@ class RxNavService:
         Initialize RxNav service.
         """
         self.base_url = (base_url or settings.RXNAV_API_BASE_URL).rstrip('/')
-        self.timeout = 5.0  # Seconds
+        self.timeout = 15.0  # Phase 2: 15-second outbound safety window
     
     async def get_rxcui_for_medication(self, medication_name: str) -> str:
         """
@@ -88,12 +88,16 @@ class RxNavService:
                     timeout=self.timeout
                 )
                 
-                # Handle HTTP errors
+                # Handle HTTP errors — 429 is rate-limited; treat as connection error
+                # so callers can degrade gracefully without retrying immediately.
+                if response.status_code == 429:
+                    raise RxNavConnectionError(
+                        "RxNav rate limit exceeded (429) — degraded mode"
+                    )
                 if response.status_code >= 500:
                     raise RxNavConnectionError(
                         f"RxNav server error: HTTP {response.status_code}"
                     )
-                
                 if response.status_code != 200:
                     raise RxNavConnectionError(
                         f"Unexpected RxNav response: HTTP {response.status_code}"

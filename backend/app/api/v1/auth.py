@@ -3,6 +3,7 @@ SMART on FHIR authentication endpoints.
 Implements OAuth 2.0 authorization flow with BFF pattern for secure credential management.
 """
 
+import hmac
 import logging
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import RedirectResponse
@@ -92,9 +93,13 @@ async def auth_callback(
             detail="Authorization failed. Please try again."
         )
     
-    # Validate state parameter (CSRF protection)
+    # Validate state parameter (CSRF protection).
+    # hmac.compare_digest eliminates timing side-channels that a plain == comparison
+    # leaks; an attacker measuring response latency cannot infer the correct token.
     stored_state: Optional[str] = get_session_string(request, "oauth_state", "")
-    if not state or not stored_state or state != stored_state:
+    if not state or not stored_state or not hmac.compare_digest(
+        state.encode(), stored_state.encode()
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid state parameter - possible CSRF attack"
